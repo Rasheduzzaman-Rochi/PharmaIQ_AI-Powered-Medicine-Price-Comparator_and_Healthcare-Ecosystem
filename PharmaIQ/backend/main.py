@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from models import *
 from gemini_service import get_gemini_response
-from firebase_config import get_all_products, get_product, get_user, save_user, get_routine, save_routine_item
+from firebase_config import get_all_products, get_product as get_product_from_store, get_user, save_user, get_routine, save_routine_item
 import json
 import os
 
@@ -100,7 +100,7 @@ async def get_products():
 
 @app.get("/api/products/{product_id}")
 async def get_product(product_id: str):
-    product = get_product(product_id)
+    product = get_product_from_store(product_id)
     if not product:
         raise HTTPException(404, "Product not found")
     return product

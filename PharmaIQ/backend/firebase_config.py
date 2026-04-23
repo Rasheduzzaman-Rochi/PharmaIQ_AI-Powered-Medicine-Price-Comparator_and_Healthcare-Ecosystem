@@ -1,6 +1,7 @@
 import firebase_admin
 from firebase_admin import credentials, firestore
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -8,13 +9,21 @@ load_dotenv()
 db = None
 firebase_initialized = False
 
+BASE_DIR = Path(__file__).resolve().parent
+
 try:
     cred_path = os.getenv("FIREBASE_CREDENTIALS_PATH", "serviceAccountKey.json")
-    if os.path.exists(cred_path):
+    cred_path = Path(cred_path)
+    if not cred_path.is_absolute():
+        cred_path = (BASE_DIR / cred_path).resolve()
+
+    if cred_path.exists():
         cred = credentials.Certificate(cred_path)
         firebase_admin.initialize_app(cred)
         db = firestore.client()
         firebase_initialized = True
+    else:
+        print(f"Warning: Firebase credentials file not found at {cred_path}")
 except Exception as e:
     print(f"Warning: Firebase not initialized - {e}")
     db = None
@@ -59,24 +68,27 @@ def update_routine_log(user_id, med_id, date, taken):
 
 # Shop products (read-only)
 def get_all_products():
-    # Demo products for testing
-    demo_products = [
-        {"id": "1", "name": "Vitamin C 1000mg", "price": 12.99, "brand": "HealthCare+"},
-        {"id": "2", "name": "Omega-3 Fish Oil", "price": 14.99, "brand": "NutraLife"},
-        {"id": "3", "name": "Medical Face Masks (50)", "price": 9.99, "brand": "SafeGuard"},
-        {"id": "4", "name": "Digital Thermometer", "price": 19.99, "brand": "MediCheck"},
-        {"id": "5", "name": "Blood Pressure Monitor", "price": 39.99, "brand": "CardioX"},
-        {"id": "6", "name": "First Aid Kit", "price": 24.99, "brand": "Emergency"}
-    ]
-
     if firebase_initialized and db:
         try:
-            docs = db.collection('products').stream()
-            return [{'id': doc.id, **doc.to_dict()} for doc in docs]
+            preferred_collections = [
+                os.getenv('FIRESTORE_PRODUCTS_COLLECTION', '').strip(),
+                'medicines',
+                'products'
+            ]
+            seen = set()
+
+            for collection_name in preferred_collections:
+                if not collection_name or collection_name in seen:
+                    continue
+                seen.add(collection_name)
+
+                docs = list(db.collection(collection_name).stream())
+                if docs:
+                    return [{'id': doc.id, **doc.to_dict()} for doc in docs]
         except Exception as e:
             print(f"Error getting products: {e}")
 
-    return demo_products
+    return []
 
 def get_product(product_id):
     products = get_all_products()
