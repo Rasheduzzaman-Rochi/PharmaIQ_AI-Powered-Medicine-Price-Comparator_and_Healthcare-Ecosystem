@@ -92,48 +92,6 @@ const NAV_ITEMS = [
     { id: "encyclopedia", label: "Drug Encyclopedia", icon: "fa-book-medical" }
 ];
 
-const MOCK_DB = {
-    napa: {
-        brand: "Napa 500mg",
-        generic: "Paracetamol",
-        company: "Beximco",
-        price: 1.2,
-        medClass: "Analgesic",
-        alternatives: [
-            { brand: "Ace", price: 0.8, company: "Square" },
-            { brand: "Reset", price: 0.85, company: "Incepta" }
-        ]
-    },
-    seclo: {
-        brand: "Seclo 20mg",
-        generic: "Omeprazole",
-        company: "Square",
-        price: 6,
-        medClass: "Antacid",
-        alternatives: [
-            { brand: "Losectil", price: 4.5, company: "Eskayef" },
-            { brand: "Progut", price: 5, company: "Renata" }
-        ]
-    },
-    comet: {
-        brand: "Comet 500mg",
-        generic: "Metformin",
-        company: "Square",
-        price: 4,
-        medClass: "Anti-diabetic",
-        alternatives: [
-            { brand: "Metfo", price: 2.5, company: "Beximco" },
-            { brand: "Informin", price: 3, company: "Acme" }
-        ]
-    }
-};
-
-const DIET_TIPS = {
-    Analgesic: "Take after food and keep hydration high to reduce gastric discomfort.",
-    Antacid: "Avoid spicy, greasy, and acidic meals. Prefer small, frequent meals.",
-    "Anti-diabetic": "Prioritize high-fiber food, avoid refined sugar, and track glucose regularly."
-};
-
 const CATEGORY_TAGS = ["All", "Pain Relief", "Diabetes", "Heart Care", "Supplements", "Devices"];
 
 async function callApi(endpoint, data) {
@@ -269,6 +227,8 @@ function App() {
         return product.imageUrl || product.image_url || product.image || product.thumbnail || product.photo || "";
     };
 
+    const normalizeText = (value) => String(value || "").toLowerCase().trim();
+
     const preventEnterSubmit = (e) => {
         if (e.key === "Enter" && e.target.tagName !== "TEXTAREA") {
             e.preventDefault();
@@ -280,22 +240,76 @@ function App() {
         if (!text) return;
         setView("finder");
         setIsLoading(true);
+        setResults([]);
 
         setTimeout(() => {
-            const matches = Object.keys(MOCK_DB)
-                .filter((k) => text.includes(k))
-                .map((k) => MOCK_DB[k]);
-            setResults(matches);
+            if (shopProducts.length === 0) {
+                setResults([]);
+                setIsLoading(false);
+                return;
+            }
+
+            const includesQuery = (p) => {
+                const haystack = [p.name, p.brandName, p.genericName, p.company, p.drugClass, p.category]
+                    .map(normalizeText)
+                    .join(" ");
+                return haystack.includes(text);
+            };
+
+            const words = text.split(/\s+/).filter(Boolean);
+            const matchesAnyWord = (p) => {
+                const haystack = [p.name, p.brandName, p.genericName, p.company, p.drugClass, p.category]
+                    .map(normalizeText)
+                    .join(" ");
+                return words.some((word) => haystack.includes(word));
+            };
+
+            const baseCandidates = shopProducts
+                .filter((p) => includesQuery(p) || matchesAnyWord(p))
+                .slice(0, 6);
+
+            const finderRows = baseCandidates.map((base) => {
+                const basePrice = Number(base.price || 0);
+                const baseGeneric = normalizeText(base.genericName);
+
+                const alternatives = shopProducts
+                    .filter((p) => {
+                        // Exclude the exact searched/base medicine from alternatives.
+                        if (p.id === base.id) return false;
+
+                        const genericName = normalizeText(p.genericName);
+                        if (!baseGeneric || !genericName || genericName !== baseGeneric) return false;
+
+                        const altPrice = Number(p.price || 0);
+                        // Alternative list is generic-matched items sorted by low to high.
+                        // Keep only valid priced items so ordering remains meaningful.
+                        return altPrice > 0;
+                    })
+                    .sort((a, b) => Number(a.price || 0) - Number(b.price || 0))
+                    .slice(0, 20);
+
+                const cheapest = alternatives[0];
+                const bestSaving = cheapest ? Math.max(basePrice - Number(cheapest.price || 0), 0) : 0;
+
+                return {
+                    base,
+                    alternatives,
+                    bestSaving
+                };
+            });
+
+            setResults(finderRows);
             setIsLoading(false);
-        }, 850);
+        }, 550);
     };
 
     const runScan = () => {
         setIsScanning(true);
         setTimeout(() => {
             setIsScanning(false);
-            setQuery("Napa and Comet");
-            searchMedicines("napa comet");
+            const fallback = shopProducts[0]?.name || "Paracetamol";
+            setQuery(fallback);
+            searchMedicines(fallback);
         }, 2400);
     };
 
@@ -332,6 +346,12 @@ function App() {
             .map((item) => item.id === id ? { ...item, qty: item.qty + delta } : item)
             .filter((item) => item.qty > 0)
         );
+    };
+
+    const buyFromFinder = (product) => {
+        addToCart(product);
+        setShopSearch(product.name || product.brandName || "");
+        setView("shop");
     };
 
     const handleCheckout = async () => {
@@ -537,7 +557,7 @@ function App() {
                     Find Better Medicine Alternatives
                 </h2>
                 <p className="text-slate-600 max-w-2xl">
-                    Search brand names or scan a prescription to find cheaper alternatives instantly.
+                    Search for medications or scan your prescription to discover affordable, high-quality generic alternatives instantly.
                 </p>
 
                 <div className="mt-7 bg-white rounded-2xl border border-slate-200 p-3 md:p-4 shadow-sm">
@@ -564,72 +584,108 @@ function App() {
             {isLoading && (
                 <div className="glass rounded-2xl p-8 text-center">
                     <div className="w-12 h-12 border-4 border-teal-100 border-t-teal-700 rounded-full animate-spin mx-auto"></div>
-                    <p className="mt-3 text-slate-600">Analyzing prescription...</p>
+                    <p className="mt-3 text-slate-600">Analyzing shop medicines...</p>
                 </div>
             )}
 
             {!isLoading && results.length > 0 && (
                 <div className="space-y-6">
-                    {results.map((med, idx) => {
-                        const minPrice = Math.min(...med.alternatives.map((a) => a.price));
-                        const saving = (med.price - minPrice).toFixed(2);
-                        const allergy = profile.allergies.includes(med.generic);
+                    {results.map((row, idx) => {
+                        const med = row.base;
+                        const alternatives = row.alternatives;
+                        const allergy = med.genericName && profile.allergies.includes(med.genericName);
 
                         return (
                             <article key={idx} className="glass rounded-2xl overflow-hidden fade-up">
                                 {allergy && (
                                     <div className="bg-rose-50 border-b border-rose-200 px-5 py-4 text-rose-700 text-sm">
                                         <i className="fa-solid fa-triangle-exclamation mr-2"></i>
-                                        Allergy warning: {med.generic} is in your profile.
+                                        Allergy warning: {med.genericName} is in your profile.
                                     </div>
                                 )}
 
                                 <div className="p-6 md:p-7 border-b border-slate-100 flex flex-col md:flex-row md:items-start md:justify-between gap-5">
                                     <div>
-                                        <span className="text-xs font-bold uppercase tracking-wide px-2.5 py-1 rounded-full bg-slate-100 text-slate-600">{med.medClass}</span>
-                                        <h3 className="text-2xl font-extrabold mt-2">{med.brand}</h3>
-                                        <p className="text-slate-600 mt-1">Generic: {med.generic}</p>
-                                        <p className="text-slate-500 text-sm">Company: {med.company}</p>
+                                        <span className="text-xs font-bold uppercase tracking-wide px-2.5 py-1 rounded-full bg-slate-100 text-slate-600">{med.drugClass || med.category || "Medicine"}</span>
+                                        <h3 className="text-2xl font-extrabold mt-2">{med.brandName || med.name}</h3>
+                                        {med.genericName && <p className="text-slate-600 mt-1">Generic: {med.genericName}</p>}
+                                        <p className="text-slate-500 text-sm">Company: {med.company || med.brand}</p>
                                     </div>
 
                                     <div className="md:text-right">
-                                        <p className="text-3xl font-extrabold text-slate-900">Tk {med.price.toFixed(2)}</p>
-                                        <p className="text-xs text-slate-500">per tablet</p>
+                                        <p className="text-3xl font-extrabold text-slate-900">Tk {Number(med.price || 0).toFixed(2)}</p>
+                                        <p className="text-xs text-slate-500">base price</p>
                                         <div className="mt-3 flex md:justify-end gap-2">
-                                            <button onClick={() => addToRoutine(med.brand)} className="px-4 py-2 rounded-lg border border-teal-200 bg-teal-50 text-teal-700 text-sm font-semibold">
+                                            <button onClick={() => addToRoutine(med.brandName || med.name)} className="px-4 py-2 rounded-lg border border-teal-200 bg-teal-50 text-teal-700 text-sm font-semibold">
                                                 <i className="fa-regular fa-clock mr-1"></i>Add to Routine
                                             </button>
-                                            <button onClick={() => setView("shop")} className="px-4 py-2 rounded-lg bg-slate-900 text-white text-sm font-semibold">
+                                            <button onClick={() => buyFromFinder(med)} className="px-4 py-2 rounded-lg bg-slate-900 text-white text-sm font-semibold">
                                                 <i className="fa-solid fa-store mr-1"></i>Buy from Shop
                                             </button>
                                         </div>
                                     </div>
                                 </div>
 
-                                <div className="px-6 md:px-7 py-3 bg-teal-700 text-white text-sm font-semibold">
-                                    Save up to Tk {saving} per tablet by switching alternatives.
+                                <div className="px-6 md:px-7 py-3 bg-teal-700 text-white text-sm font-semibold flex flex-wrap items-center justify-between gap-2">
+                                    <span>Save up to Tk {row.bestSaving.toFixed(2)} per tablet by switching to cheaper options.</span>
+                                    <span className="inline-flex items-center px-2.5 py-1 rounded-full bg-white/20 text-xs">
+                                        <i className="fa-solid fa-bullhorn mr-1"></i>Suggestion: Choose these lower-price alternatives to reduce cost
+                                    </span>
                                 </div>
 
                                 <div className="p-6 md:p-7 bg-slate-50">
-                                    <h4 className="font-bold text-slate-700 mb-4">Cheaper Alternatives</h4>
-                                    <div className="grid sm:grid-cols-2 gap-3">
-                                        {med.alternatives.map((alt, i) => (
-                                            <div key={i} className="bg-white rounded-xl border border-slate-200 p-4">
-                                                <div className="flex items-start justify-between">
-                                                    <div>
-                                                        <p className="font-bold text-slate-800">{alt.brand}</p>
-                                                        <p className="text-xs text-slate-500">{alt.company}</p>
-                                                    </div>
-                                                    <p className="font-extrabold text-teal-700">Tk {alt.price.toFixed(2)}</p>
-                                                </div>
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
+                                    <h4 className="font-bold text-slate-700 mb-4">Cheaper Alternatives From Medicine Shop</h4>
 
-                                <div className="px-6 md:px-7 py-4 bg-cyan-50 border-t border-cyan-100 text-cyan-900 text-sm">
-                                    <i className="fa-solid fa-apple-whole mr-2"></i>
-                                    {DIET_TIPS[med.medClass]}
+                                    {alternatives.length === 0 ? (
+                                        <div className="bg-white rounded-xl border border-slate-200 p-4 text-sm text-slate-500">
+                                            No cheaper alternative found in your current shop dataset for this medicine.
+                                        </div>
+                                    ) : (
+                                        <div className="grid sm:grid-cols-2 gap-4">
+                                            {alternatives.map((alt) => (
+                                                <article key={alt.id} className="glass rounded-2xl p-4 overflow-hidden">
+                                                    <div className="h-40 rounded-xl bg-slate-100 mb-3 overflow-hidden relative">
+                                                        {getProductImage(alt) ? (
+                                                            <img src={getProductImage(alt)} alt={alt.name} className="w-full h-full object-cover" />
+                                                        ) : (
+                                                            <div className="w-full h-full flex items-center justify-center bg-gradient-to-br from-cyan-100 to-teal-100 text-teal-700 text-4xl">
+                                                                <i className="fa-solid fa-capsules"></i>
+                                                            </div>
+                                                        )}
+                                                        <div className="absolute left-3 top-3 rounded-full bg-white/90 px-2.5 py-1 text-[11px] font-bold text-emerald-700 shadow-sm">
+                                                            Save Tk {(Number(med.price || 0) - Number(alt.price || 0)).toFixed(2)}
+                                                        </div>
+                                                    </div>
+
+                                                    <h3 className="font-extrabold text-lg leading-tight">{alt.brandName || alt.name}</h3>
+                                                    {alt.genericName && <p className="text-sm text-slate-600">Generic: {alt.genericName}</p>}
+                                                    <p className="text-sm text-slate-500">{alt.company || alt.brand}</p>
+
+                                                    <div className="mt-4 flex items-center justify-between">
+                                                        <p className="text-2xl font-extrabold text-slate-900">Tk {Number(alt.price || 0).toFixed(2)}</p>
+                                                        <button onClick={() => addToCart(alt)} className="h-10 px-4 rounded-lg bg-teal-700 text-white text-sm font-semibold">
+                                                            <i className="fa-solid fa-cart-plus mr-1"></i>Add
+                                                        </button>
+                                                    </div>
+
+                                                    <div className="mt-3 grid grid-cols-2 gap-2">
+                                                        <button
+                                                            onClick={() => addToRoutine(alt.brandName || alt.name)}
+                                                            className="h-9 rounded-lg border border-teal-200 bg-teal-50 text-teal-700 text-xs font-semibold"
+                                                        >
+                                                            <i className="fa-regular fa-clock mr-1"></i>Add Routine
+                                                        </button>
+                                                        <button
+                                                            onClick={() => buyFromFinder(alt)}
+                                                            className="h-9 rounded-lg bg-teal-700 text-white text-xs font-semibold"
+                                                        >
+                                                            <i className="fa-solid fa-store mr-1"></i>Buy from Shop
+                                                        </button>
+                                                    </div>
+                                                </article>
+                                            ))}
+                                        </div>
+                                    )}
                                 </div>
                             </article>
                         );
@@ -637,10 +693,18 @@ function App() {
                 </div>
             )}
 
-            {!isLoading && query && results.length === 0 && (
+            {!isLoading && query && results.length === 0 && !shopLoading && (
                 <div className="glass rounded-2xl p-8 text-center text-slate-600">
                     <i className="fa-regular fa-face-frown text-4xl mb-3 text-slate-300"></i>
-                    <p>No medicine matched your search.</p>
+                    <p>No matching medicine found from your shop dataset.</p>
+                    <p className="text-sm text-slate-500 mt-1">Try brand name, generic name, or medicine class.</p>
+                </div>
+            )}
+
+            {!isLoading && query && results.length === 0 && shopLoading && (
+                <div className="glass rounded-2xl p-8 text-center text-slate-600">
+                    <div className="w-10 h-10 border-4 border-teal-100 border-t-teal-700 rounded-full animate-spin mx-auto"></div>
+                    <p className="mt-3">Shop data is still loading...</p>
                 </div>
             )}
         </section>
