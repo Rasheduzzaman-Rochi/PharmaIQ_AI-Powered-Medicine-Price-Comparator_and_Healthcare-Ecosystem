@@ -712,13 +712,13 @@ function App() {
                                     <span>Subtotal</span><span>Tk {cartTotal.toFixed(2)}</span>
                                 </div>
                                 <div className="flex justify-between text-sm text-slate-600 mb-3">
-                                    <span>Delivery</span><span>Tk 30.00</span>
+                                    <span>Delivery</span><span>Tk Free</span>
                                 </div>
                                 <div className="rounded-xl bg-teal-50 border border-teal-100 p-3 mb-3 text-xs text-teal-800">
                                     You can later replace this with checkout form, address, and phone collection.
                                 </div>
                                 <div className="flex justify-between font-extrabold text-lg">
-                                    <span>Total</span><span>Tk {(cartTotal + 30).toFixed(2)}</span>
+                                    <span>Total</span><span>Tk {cartTotal.toFixed(2)}</span>
                                 </div>
                                 <button
                                     onClick={() => alert("Order placed successfully. Pharmacy partner will contact you soon.")}
