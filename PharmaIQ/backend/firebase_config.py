@@ -93,3 +93,20 @@ def get_all_products():
 def get_product(product_id):
     products = get_all_products()
     return next((p for p in products if p['id'] == product_id), None)
+
+
+def save_order(order_data):
+    if not firebase_initialized or db is None:
+        raise RuntimeError("Firebase is not initialized")
+
+    try:
+        payload = {
+            **order_data,
+            'created_at': firestore.SERVER_TIMESTAMP,
+            'status': 'placed'
+        }
+        ref = db.collection('orders').add(payload)[1]
+        return ref.id
+    except Exception as e:
+        print(f"Error saving order: {e}")
+        raise

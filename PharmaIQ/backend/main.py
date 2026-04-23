@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from models import *
 from gemini_service import get_gemini_response
-from firebase_config import get_all_products, get_product as get_product_from_store, get_user, save_user, get_routine, save_routine_item
+from firebase_config import get_all_products, get_product as get_product_from_store, get_user, save_user, get_routine, save_routine_item, save_order
 import json
 import os
 
@@ -104,6 +104,32 @@ async def get_product(product_id: str):
     if not product:
         raise HTTPException(404, "Product not found")
     return product
+
+
+@app.post("/api/orders")
+async def create_order(req: OrderRequest):
+    if not req.items:
+        raise HTTPException(400, "Order must contain at least one item")
+
+    order_payload = {
+        "customer_name": req.customer_name.strip(),
+        "mobile": req.mobile.strip(),
+        "address": req.address.strip(),
+        "total": req.total,
+        "items": [item.model_dump() for item in req.items]
+    }
+
+    if not order_payload["customer_name"] or not order_payload["mobile"] or not order_payload["address"]:
+        raise HTTPException(400, "Customer name, mobile and address are required")
+
+    try:
+        order_id = save_order(order_payload)
+    except RuntimeError as err:
+        raise HTTPException(503, str(err))
+    except Exception:
+        raise HTTPException(500, "Failed to save order")
+
+    return {"status": "saved", "order_id": order_id}
 
 # ------------------- Health Check -------------------
 @app.get("/api/health")

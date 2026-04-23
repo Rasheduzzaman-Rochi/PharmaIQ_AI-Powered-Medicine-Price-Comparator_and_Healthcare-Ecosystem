@@ -32,3 +32,19 @@ class MedicineInfoRequest(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     history: List[dict] = []
+
+
+class OrderItem(BaseModel):
+    id: str
+    name: str
+    brand: Optional[str] = ""
+    qty: int
+    price: float
+
+
+class OrderRequest(BaseModel):
+    customer_name: str
+    mobile: str
+    address: str
+    total: float
+    items: List[OrderItem]

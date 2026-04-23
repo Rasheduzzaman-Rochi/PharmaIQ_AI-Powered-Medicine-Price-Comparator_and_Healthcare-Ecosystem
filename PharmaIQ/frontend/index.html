@@ -190,6 +190,10 @@ function App() {
     const [shopSearch, setShopSearch] = useState("");
     const [shopCategory, setShopCategory] = useState("All");
     const [cart, setCart] = useState([]);
+    const [checkoutForm, setCheckoutForm] = useState({ name: "", mobile: "", address: "" });
+    const [checkoutError, setCheckoutError] = useState("");
+    const [checkoutLoading, setCheckoutLoading] = useState(false);
+    const [orderConfirmed, setOrderConfirmed] = useState(null);
 
     const [symptomForm, setSymptomForm] = useState({ symptoms: "", age: "", duration: "" });
     const [interactionInput, setInteractionInput] = useState("");
@@ -265,6 +269,12 @@ function App() {
         return product.imageUrl || product.image_url || product.image || product.thumbnail || product.photo || "";
     };
 
+    const preventEnterSubmit = (e) => {
+        if (e.key === "Enter" && e.target.tagName !== "TEXTAREA") {
+            e.preventDefault();
+        }
+    };
+
     const searchMedicines = (override) => {
         const text = (override || query).toLowerCase().trim();
         if (!text) return;
@@ -322,6 +332,81 @@ function App() {
             .map((item) => item.id === id ? { ...item, qty: item.qty + delta } : item)
             .filter((item) => item.qty > 0)
         );
+    };
+
+    const handleCheckout = async () => {
+        if (cart.length === 0) {
+            setCheckoutError("Your cart is empty.");
+            return;
+        }
+
+        const name = checkoutForm.name.trim();
+        const mobile = checkoutForm.mobile.trim();
+        const address = checkoutForm.address.trim();
+
+        if (!name || !mobile || !address) {
+            setCheckoutError("Please fill name, mobile number, and address.");
+            return;
+        }
+
+        const mobileOk = /^\+?[0-9\-\s]{10,15}$/.test(mobile);
+        if (!mobileOk) {
+            setCheckoutError("Please enter a valid mobile number.");
+            return;
+        }
+
+        setCheckoutLoading(true);
+        setCheckoutError("");
+
+        try {
+            const payload = {
+                customer_name: name,
+                mobile,
+                address,
+                total: cartTotal,
+                items: cart.map((item) => ({
+                    id: item.id,
+                    name: item.name,
+                    brand: item.brand || item.brandName || "",
+                    qty: item.qty,
+                    price: item.price
+                }))
+            };
+
+            const response = await fetch(`${API_BASE}/orders`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+            });
+
+            if (!response.ok) {
+                let errorMessage = "Checkout failed. Please try again.";
+                try {
+                    const errorData = await response.json();
+                    if (errorData.detail) errorMessage = String(errorData.detail);
+                } catch {
+                    // Ignore parsing error and keep generic message.
+                }
+                throw new Error(errorMessage);
+            }
+
+            const data = await response.json();
+            setOrderConfirmed({
+                orderId: data.order_id || `PH-${Date.now().toString().slice(-6)}`,
+                name,
+                mobile,
+                address,
+                items: cart.reduce((sum, item) => sum + item.qty, 0),
+                total: cartTotal
+            });
+
+            setCart([]);
+            setCheckoutForm({ name: "", mobile: "", address: "" });
+        } catch (err) {
+            setCheckoutError(err.message || "Checkout failed.");
+        } finally {
+            setCheckoutLoading(false);
+        }
     };
 
     const sendChat = async (e) => {
@@ -436,7 +521,7 @@ function App() {
         }
     };
 
-    const ToolCard = ({ title, icon, children }) => (
+    const renderToolCard = (title, icon, children) => (
         <section className="glass rounded-2xl p-6 fade-up">
             <h2 className="text-2xl font-extrabold mb-4 flex items-center">
                 <i className={`fa-solid ${icon} text-teal-700 mr-3`}></i>{title}
@@ -462,7 +547,6 @@ function App() {
                             <input
                                 value={query}
                                 onChange={(e) => setQuery(e.target.value)}
-                                onKeyDown={(e) => e.key === "Enter" && searchMedicines()}
                                 placeholder="e.g. Napa 500mg, Seclo 20mg"
                                 className="w-full h-12 rounded-xl border border-slate-200 pl-11 pr-4 focus:outline-none focus:ring-2 focus:ring-teal-500"
                             />
@@ -714,19 +798,57 @@ function App() {
                                 <div className="flex justify-between text-sm text-slate-600 mb-3">
                                     <span>Delivery</span><span>Tk Free</span>
                                 </div>
-                                <div className="rounded-xl bg-teal-50 border border-teal-100 p-3 mb-3 text-xs text-teal-800">
-                                    You can later replace this with checkout form, address, and phone collection.
+
+                                <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 mb-3 space-y-2">
+                                    <p className="text-xs font-bold text-slate-700">Checkout Information</p>
+                                    <input
+                                        value={checkoutForm.name}
+                                        onChange={(e) => setCheckoutForm((prev) => ({ ...prev, name: e.target.value }))}
+                                        placeholder="Full name"
+                                        className="w-full h-10 rounded-lg border border-slate-300 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+                                    />
+                                    <input
+                                        value={checkoutForm.mobile}
+                                        onChange={(e) => setCheckoutForm((prev) => ({ ...prev, mobile: e.target.value }))}
+                                        placeholder="Mobile number"
+                                        className="w-full h-10 rounded-lg border border-slate-300 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+                                    />
+                                    <textarea
+                                        value={checkoutForm.address}
+                                        onChange={(e) => setCheckoutForm((prev) => ({ ...prev, address: e.target.value }))}
+                                        placeholder="Delivery address"
+                                        rows="2"
+                                        className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-500"
+                                    ></textarea>
+                                    {checkoutError && <p className="text-xs text-rose-600">{checkoutError}</p>}
                                 </div>
+
                                 <div className="flex justify-between font-extrabold text-lg">
                                     <span>Total</span><span>Tk {cartTotal.toFixed(2)}</span>
                                 </div>
                                 <button
-                                    onClick={() => alert("Order placed successfully. Pharmacy partner will contact you soon.")}
+                                    onClick={handleCheckout}
+                                    disabled={checkoutLoading}
                                     className="w-full mt-4 h-11 rounded-xl bg-teal-700 text-white font-semibold"
                                 >
-                                    <i className="fa-solid fa-credit-card mr-2"></i>Checkout
+                                    <i className="fa-solid fa-credit-card mr-2"></i>{checkoutLoading ? "Saving..." : "Checkout"}
                                 </button>
                             </div>
+                        </div>
+                    )}
+
+                    {orderConfirmed && (
+                        <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+                            <div className="flex items-center mb-2">
+                                <i className="fa-solid fa-circle-check text-emerald-600 mr-2"></i>
+                                <p className="font-extrabold text-emerald-700">Order Confirmed</p>
+                            </div>
+                            <p className="text-sm text-emerald-800">Order ID: {orderConfirmed.orderId}</p>
+                            <p className="text-sm text-emerald-800">Customer: {orderConfirmed.name}</p>
+                            <p className="text-sm text-emerald-800">Mobile: {orderConfirmed.mobile}</p>
+                            <p className="text-sm text-emerald-800">Address: {orderConfirmed.address}</p>
+                            <p className="text-sm text-emerald-800">Items: {orderConfirmed.items}</p>
+                            <p className="text-sm font-bold text-emerald-900">Total Paid: Tk {orderConfirmed.total.toFixed(2)}</p>
                         </div>
                     )}
                 </div>
@@ -775,14 +897,14 @@ function App() {
     );
 
     const renderMain = () => {
-        if (view === "finder") return <FinderView />;
-        if (view === "shop") return <ShopView />;
-        if (view === "routine") return <RoutineView />;
+        if (view === "finder") return FinderView();
+        if (view === "shop") return ShopView();
+        if (view === "routine") return RoutineView();
 
         if (view === "symptom") {
-            return (
-                <ToolCard title="Symptom Analyzer" icon="fa-stethoscope">
-                    <form onSubmit={submitSymptom} className="space-y-3">
+            return renderToolCard("Symptom Analyzer", "fa-stethoscope", (
+                <>
+                    <form onSubmit={submitSymptom} onKeyDown={preventEnterSubmit} className="space-y-3">
                         <textarea value={symptomForm.symptoms} onChange={(e) => setSymptomForm({ ...symptomForm, symptoms: e.target.value })} placeholder="Describe symptoms" className="w-full rounded-xl border border-slate-300 p-3" rows="4" required />
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                             <input value={symptomForm.age} onChange={(e) => setSymptomForm({ ...symptomForm, age: e.target.value })} type="number" placeholder="Age" className="rounded-xl border border-slate-300 p-3" />
@@ -791,26 +913,26 @@ function App() {
                         <button className="h-11 px-6 rounded-xl bg-teal-700 text-white font-semibold" type="submit">{moduleLoading === "symptom" ? "Analyzing..." : "Analyze Symptoms"}</button>
                     </form>
                     <JsonView title="Analysis" data={symptomResult} />
-                </ToolCard>
-            );
+                </>
+            ));
         }
 
         if (view === "interaction") {
-            return (
-                <ToolCard title="Drug Interaction Checker" icon="fa-shield-virus">
-                    <form onSubmit={submitInteraction} className="space-y-3">
+            return renderToolCard("Drug Interaction Checker", "fa-shield-virus", (
+                <>
+                    <form onSubmit={submitInteraction} onKeyDown={preventEnterSubmit} className="space-y-3">
                         <textarea value={interactionInput} onChange={(e) => setInteractionInput(e.target.value)} placeholder="Medicines separated by comma" className="w-full rounded-xl border border-slate-300 p-3" rows="4" required />
                         <button className="h-11 px-6 rounded-xl bg-teal-700 text-white font-semibold" type="submit">{moduleLoading === "interaction" ? "Checking..." : "Check Interactions"}</button>
                     </form>
                     <JsonView title="Interaction Report" data={interactionResult} />
-                </ToolCard>
-            );
+                </>
+            ));
         }
 
         if (view === "dosage") {
-            return (
-                <ToolCard title="Dosage Calculator" icon="fa-calculator">
-                    <form onSubmit={submitDosage} className="space-y-3">
+            return renderToolCard("Dosage Calculator", "fa-calculator", (
+                <>
+                    <form onSubmit={submitDosage} onKeyDown={preventEnterSubmit} className="space-y-3">
                         <input value={dosageForm.medicine_name} onChange={(e) => setDosageForm({ ...dosageForm, medicine_name: e.target.value })} placeholder="Medicine name" className="w-full rounded-xl border border-slate-300 p-3" required />
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                             <input value={dosageForm.age} onChange={(e) => setDosageForm({ ...dosageForm, age: e.target.value })} type="number" placeholder="Age" className="rounded-xl border border-slate-300 p-3" required />
@@ -820,14 +942,14 @@ function App() {
                         <button className="h-11 px-6 rounded-xl bg-teal-700 text-white font-semibold" type="submit">{moduleLoading === "dosage" ? "Calculating..." : "Calculate Dosage"}</button>
                     </form>
                     <JsonView title="Dosage Recommendation" data={dosageResult} />
-                </ToolCard>
-            );
+                </>
+            ));
         }
 
         if (view === "effects") {
-            return (
-                <ToolCard title="Side Effects Predictor" icon="fa-triangle-exclamation">
-                    <form onSubmit={submitEffects} className="space-y-3">
+            return renderToolCard("Side Effects Predictor", "fa-triangle-exclamation", (
+                <>
+                    <form onSubmit={submitEffects} onKeyDown={preventEnterSubmit} className="space-y-3">
                         <input value={effectsForm.medicine_name} onChange={(e) => setEffectsForm({ ...effectsForm, medicine_name: e.target.value })} placeholder="Medicine name" className="w-full rounded-xl border border-slate-300 p-3" required />
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                             <input value={effectsForm.patient_age} onChange={(e) => setEffectsForm({ ...effectsForm, patient_age: e.target.value })} type="number" placeholder="Patient age" className="rounded-xl border border-slate-300 p-3" />
@@ -836,19 +958,19 @@ function App() {
                         <button className="h-11 px-6 rounded-xl bg-teal-700 text-white font-semibold" type="submit">{moduleLoading === "effects" ? "Predicting..." : "Predict Side Effects"}</button>
                     </form>
                     <JsonView title="Side Effect Risk" data={effectsResult} />
-                </ToolCard>
-            );
+                </>
+            ));
         }
 
-        return (
-            <ToolCard title="Drug Encyclopedia" icon="fa-book-medical">
-                <form onSubmit={submitEncyclopedia} className="space-y-3">
+        return renderToolCard("Drug Encyclopedia", "fa-book-medical", (
+            <>
+                <form onSubmit={submitEncyclopedia} onKeyDown={preventEnterSubmit} className="space-y-3">
                     <input value={encyclopediaDrug} onChange={(e) => setEncyclopediaDrug(e.target.value)} placeholder="Search medicine info" className="w-full rounded-xl border border-slate-300 p-3" required />
                     <button className="h-11 px-6 rounded-xl bg-teal-700 text-white font-semibold" type="submit">{moduleLoading === "encyclopedia" ? "Loading..." : "Get Drug Info"}</button>
                 </form>
                 <JsonView title="Drug Profile" data={encyclopediaResult} />
-            </ToolCard>
-        );
+            </>
+        ));
     };
 
     const TipsPanel = () => (
