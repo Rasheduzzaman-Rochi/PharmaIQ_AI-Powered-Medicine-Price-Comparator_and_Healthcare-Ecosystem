@@ -92,6 +92,7 @@
 const { useEffect, useMemo, useState } = React;
 
 const API_BASE = "http://localhost:8000/api";
+const ROUTINE_USER_ID = "demo-user";
 
 const NAV_ITEMS = [
     { id: "finder", label: "Alternative Finder", icon: "fa-magnifying-glass-dollar" },
@@ -141,6 +142,8 @@ function App() {
     const [view, setView] = useState("finder");
     const [mobileMenu, setMobileMenu] = useState(false);
 
+    const initialRoutineReminders = [];
+
     const [query, setQuery] = useState("");
     const [isScanning, setIsScanning] = useState(false);
     const [isLoading, setIsLoading] = useState(false);
@@ -164,12 +167,9 @@ function App() {
     ]);
 
     const [profile, setProfile] = useState({
-        name: "Rashed",
-        allergies: ["Paracetamol"],
-        reminders: [
-            { id: 1, time: "08:00 AM", medicine: "Seclo 20mg", status: "Taken" },
-            { id: 2, time: "08:00 PM", medicine: "Comet 500mg", status: "Pending" }
-        ]
+        name: "",
+        allergies: [],
+        reminders: initialRoutineReminders
     });
 
     const [shopProducts, setShopProducts] = useState([]);
@@ -195,6 +195,7 @@ function App() {
     const [dosageResult, setDosageResult] = useState(null);
     const [effectsResult, setEffectsResult] = useState(null);
     const [encyclopediaResult, setEncyclopediaResult] = useState(null);
+    const [hasSearched, setHasSearched] = useState(false);
 
     useEffect(() => {
         const loadProducts = async () => {
@@ -204,9 +205,10 @@ function App() {
                 const data = await res.json();
                 const normalized = (Array.isArray(data) ? data : []).map((p, i) => ({
                     id: p.id || String(i + 1),
-                    name: p.name || p.brand_name || p.generic_name || "Medicine",
-                    brandName: p.brand_name || p.name || "Unknown Brand",
-                    genericName: p.generic_name || "",
+                    name: p.name || p.medicine_name || p.brand_name || p.generic_name || "Medicine",
+                    brandName: p.brand_name || p.brand || p.medicine_name || p.name || "Unknown Brand",
+                    genericName: p.generic_name || p.generic || "",
+                    medicineName: p.medicine_name || p.medicineName || p.name || p.brand_name || "",
                     price: Number(p.price || 0),
                     brand: p.brand || p.brand_name || "Pharma Brand",
                     company: p.company || p.manufacturer || "",
@@ -230,9 +232,35 @@ function App() {
         loadProducts();
     }, []);
 
+    useEffect(() => {
+        const loadRoutine = async () => {
+            try {
+                const res = await fetch(`${API_BASE}/user/${ROUTINE_USER_ID}`);
+                if (!res.ok) return;
+
+                const data = await res.json();
+                const remoteRoutine = Array.isArray(data.routine) ? data.routine.map((item, index) => ({
+                    id: item.id || item.routine_id || `${Date.now()}-${index}`,
+                    dbId: item.id || item.routine_id || "",
+                    time: item.time || "09:00 PM",
+                    medicine: item.medicine || item.name || "Medicine",
+                    status: item.status || "Pending"
+                })) : [];
+
+                if (remoteRoutine.length > 0) {
+                    setProfile((prev) => ({ ...prev, reminders: remoteRoutine }));
+                }
+            } catch {
+                // Keep local state when backend is unavailable.
+            }
+        };
+
+        loadRoutine();
+    }, []);
+
     const progress = useMemo(() => {
         const total = profile.reminders.length;
-        const taken = profile.reminders.filter((r) => r.status === "Taken").length;
+        const taken = profile.reminders.filter((item) => item.status === "Taken" || item.status === "Completed").length;
         return total ? Math.round((taken / total) * 100) : 0;
     }, [profile.reminders]);
 
@@ -266,7 +294,13 @@ function App() {
 
     const searchMedicines = (override) => {
         const text = (override || query).toLowerCase().trim();
-        if (!text) return;
+        if (!text) {
+            setHasSearched(false);
+            setResults([]);
+            return;
+        }
+
+        setHasSearched(true);
         setView("finder");
         setIsLoading(true);
         setResults([]);
@@ -278,19 +312,28 @@ function App() {
                 return;
             }
 
+            const medicineFields = (p) => [
+                p.name,
+                p.medicineName,
+                p.brandName,
+                p.genericName,
+                p.company,
+                p.drugClass,
+                p.category,
+                p.form,
+                p.strength,
+                p.description
+            ]
+                .map(normalizeText)
+                .filter(Boolean);
+
             const includesQuery = (p) => {
-                const haystack = [p.name, p.brandName, p.genericName, p.company, p.drugClass, p.category]
-                    .map(normalizeText)
-                    .join(" ");
-                return haystack.includes(text);
+                return medicineFields(p).some((field) => field.includes(text));
             };
 
             const words = text.split(/\s+/).filter(Boolean);
             const matchesAnyWord = (p) => {
-                const haystack = [p.name, p.brandName, p.genericName, p.company, p.drugClass, p.category]
-                    .map(normalizeText)
-                    .join(" ");
-                return words.some((word) => haystack.includes(word));
+                return medicineFields(p).some((field) => words.some((word) => field.includes(word)));
             };
 
             const baseCandidates = shopProducts
@@ -338,26 +381,118 @@ function App() {
             setIsScanning(false);
             const fallback = shopProducts[0]?.name || "Paracetamol";
             setQuery(fallback);
+            setHasSearched(true);
             searchMedicines(fallback);
         }, 2400);
     };
 
-    const addToRoutine = (medName) => {
+    const persistRoutineItem = async (item) => {
+        const response = await fetch(`${API_BASE}/user/${ROUTINE_USER_ID}/routine`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(item)
+        });
+
+        if (!response.ok) {
+            const text = await response.text();
+            throw new Error(text || "Failed to save routine item");
+        }
+
+        return response.json();
+    };
+
+    const deleteRoutineItem = async (routineId) => {
+        const response = await fetch(`${API_BASE}/user/${ROUTINE_USER_ID}/routine/${routineId}`, {
+            method: "DELETE"
+        });
+
+        if (!response.ok) {
+            const text = await response.text();
+            throw new Error(text || "Failed to delete routine item");
+        }
+
+        return response.json();
+    };
+
+    const updateRoutineStatus = async (routineId, status) => {
+        const response = await fetch(`${API_BASE}/user/${ROUTINE_USER_ID}/routine/${routineId}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ status })
+        });
+
+        if (!response.ok) {
+            const text = await response.text();
+            throw new Error(text || "Failed to update routine item");
+        }
+
+        return response.json();
+    };
+
+    const addToRoutine = async (medName) => {
         const next = {
             id: Date.now(),
+            dbId: "",
             time: "09:00 PM",
             medicine: medName,
             status: "Pending"
         };
         setProfile((prev) => ({ ...prev, reminders: [...prev.reminders, next] }));
         setView("routine");
+
+        try {
+            const data = await persistRoutineItem(next);
+            const savedId = data.id || data.routine_id || "";
+            if (savedId) {
+                setProfile((prev) => ({
+                    ...prev,
+                    reminders: prev.reminders.map((item) => item.id === next.id ? { ...item, dbId: savedId } : item)
+                }));
+            }
+        } catch (err) {
+            setModuleError(err.message || "Failed to save routine item.");
+        }
     };
 
-    const markTaken = (id) => {
+    const completeRoutineItem = async (id) => {
+        const target = profile.reminders.find((item) => item.id === id);
+        if (!target) return;
+
         setProfile((prev) => ({
             ...prev,
-            reminders: prev.reminders.map((r) => r.id === id ? { ...r, status: "Taken" } : r)
+            reminders: prev.reminders.map((item) => item.id === id ? { ...item, status: "Taken" } : item)
         }));
+
+        try {
+            if (target.dbId) {
+                await updateRoutineStatus(target.dbId, "Taken");
+            }
+        } catch (err) {
+            setModuleError(err.message || "Failed to complete routine item.");
+            setProfile((prev) => ({
+                ...prev,
+                reminders: prev.reminders.map((item) => item.id === id ? { ...item, status: target.status } : item)
+            }));
+        }
+    };
+
+    const removeRoutineItemFromList = async (id) => {
+        const target = profile.reminders.find((item) => item.id === id);
+        if (!target) return;
+
+        setProfile((prev) => ({
+            ...prev,
+            reminders: prev.reminders.filter((item) => item.id !== id)
+        }));
+
+        try {
+            if (target.dbId) {
+                await deleteRoutineItem(target.dbId);
+            }
+        } catch (err) {
+            setModuleError(err.message || "Failed to delete routine item.");
+            setProfile((prev) => ({ ...prev, reminders: [...prev.reminders, target] }));
+        }
     };
 
     const addToCart = (product) => {
@@ -791,7 +926,13 @@ function App() {
                     Search for medications or scan your prescription to discover affordable, high-quality generic alternatives instantly.
                 </p>
 
-                <div className="mt-7 bg-white rounded-2xl border border-slate-200 p-3 md:p-4 shadow-sm">
+                <form
+                    className="mt-7 bg-white rounded-2xl border border-slate-200 p-3 md:p-4 shadow-sm"
+                    onSubmit={(e) => {
+                        e.preventDefault();
+                        searchMedicines();
+                    }}
+                >
                     <div className="flex flex-col md:flex-row gap-3">
                         <div className="relative flex-1">
                             <i className="fa-solid fa-magnifying-glass absolute left-4 top-4 text-slate-400"></i>
@@ -805,11 +946,11 @@ function App() {
                         <button onClick={runScan} className="h-12 px-5 rounded-xl border border-teal-200 bg-teal-50 text-teal-700 font-semibold hover:bg-teal-100">
                             <i className="fa-solid fa-camera mr-2"></i>Scan Image
                         </button>
-                        <button onClick={() => searchMedicines()} className="h-12 px-7 rounded-xl bg-teal-700 text-white font-semibold hover:bg-teal-800">
+                        <button type="submit" className="h-12 px-7 rounded-xl bg-teal-700 text-white font-semibold hover:bg-teal-800">
                             Search
                         </button>
                     </div>
-                </div>
+                </form>
             </div>
 
             {isLoading && (
@@ -924,7 +1065,7 @@ function App() {
                 </div>
             )}
 
-            {!isLoading && query && results.length === 0 && !shopLoading && (
+            {!isLoading && hasSearched && query && results.length === 0 && !shopLoading && (
                 <div className="glass rounded-2xl p-8 text-center text-slate-600">
                     <i className="fa-regular fa-face-frown text-4xl mb-3 text-slate-300"></i>
                     <p>No matching medicine found from your shop dataset.</p>
@@ -932,7 +1073,7 @@ function App() {
                 </div>
             )}
 
-            {!isLoading && query && results.length === 0 && shopLoading && (
+            {!isLoading && hasSearched && query && results.length === 0 && shopLoading && (
                 <div className="glass rounded-2xl p-8 text-center text-slate-600">
                     <div className="w-10 h-10 border-4 border-teal-100 border-t-teal-700 rounded-full animate-spin mx-auto"></div>
                     <p className="mt-3">Shop data is still loading...</p>
@@ -1157,27 +1298,38 @@ function App() {
                 </div>
             </div>
 
-            {profile.reminders.map((rem) => (
-                <div key={rem.id} className="glass rounded-xl p-4 flex items-center justify-between">
-                    <div className="flex items-center">
-                        <div className={`w-10 h-10 rounded-full flex items-center justify-center mr-3 ${rem.status === "Taken" ? "bg-emerald-500 text-white" : "bg-slate-100 text-slate-500"}`}>
-                            <i className={`fa-solid ${rem.status === "Taken" ? "fa-check" : "fa-pills"}`}></i>
+            {profile.reminders.length === 0 ? (
+                <div className="glass rounded-xl p-5 text-slate-600">
+                    No active medicines in your routine. Add a medicine from Finder or Shop.
+                </div>
+            ) : (
+                profile.reminders.map((rem) => (
+                    <div key={rem.id} className="glass rounded-xl p-4 flex items-center justify-between gap-3">
+                        <div className="flex items-center min-w-0">
+                            <div className={`w-10 h-10 rounded-full flex items-center justify-center mr-3 ${rem.status === "Taken" || rem.status === "Completed" ? "bg-emerald-500 text-white" : "bg-slate-100 text-slate-500"}`}>
+                                <i className={`fa-solid ${rem.status === "Taken" || rem.status === "Completed" ? "fa-check" : "fa-pills"}`}></i>
+                            </div>
+                            <div className="min-w-0">
+                                <p className={`font-semibold truncate ${rem.status === "Taken" || rem.status === "Completed" ? "line-through text-slate-400" : "text-slate-800"}`}>{rem.medicine}</p>
+                                <p className="text-xs text-teal-700">{rem.time}</p>
+                            </div>
                         </div>
-                        <div>
-                            <p className={`font-semibold ${rem.status === "Taken" ? "line-through text-slate-400" : "text-slate-800"}`}>{rem.medicine}</p>
-                            <p className="text-xs text-teal-700">{rem.time}</p>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                            {rem.status === "Taken" || rem.status === "Completed" ? (
+                                <span className="text-xs px-3 py-1 rounded-full bg-emerald-100 text-emerald-700 font-semibold">Completed</span>
+                            ) : (
+                                <button onClick={() => completeRoutineItem(rem.id)} className="px-4 py-2 rounded-lg bg-teal-700 text-white text-sm font-semibold">
+                                    Complete
+                                </button>
+                            )}
+                            <button onClick={() => removeRoutineItemFromList(rem.id)} className="px-4 py-2 rounded-lg border border-rose-200 bg-rose-50 text-rose-700 text-sm font-semibold">
+                                Delete
+                            </button>
                         </div>
                     </div>
-
-                    {rem.status === "Taken" ? (
-                        <span className="text-xs px-3 py-1 rounded-full bg-emerald-100 text-emerald-700 font-semibold">Completed</span>
-                    ) : (
-                        <button onClick={() => markTaken(rem.id)} className="px-4 py-2 rounded-lg bg-teal-700 text-white text-sm font-semibold">
-                            Mark as Taken
-                        </button>
-                    )}
-                </div>
-            ))}
+                ))
+            )}
         </section>
     );
 
@@ -1258,19 +1410,72 @@ function App() {
         ));
     };
 
-    const TipsPanel = () => (
-        <aside className="glass rounded-2xl p-5 sticky top-24">
+    const featureTips = {
+        finder: [
+            "Match the brand, generic name, strength, and form before choosing an alternative.",
+            "If the search looks empty, try the exact brand name from the packet or prescription.",
+            "Cheaper is good, but the same active ingredient matters more.",
+        ],
+        shop: [
+            "Check packaging, strength, and company before adding a medicine to cart.",
+            "Use the search box to narrow by brand, generic name, or manufacturer.",
+            "Compare similar products before buying the first one you see.",
+        ],
+        routine: [
+            "Take routine medicines at the same time every day to avoid missed doses.",
+            "Complete removes a medicine from the database and keeps the active list clean.",
+            "Use Delete if you no longer need a reminder.",
+        ],
+        symptom: [
+            "List symptoms clearly with duration and age for a better result.",
+            "Go to urgent care if symptoms are severe or suddenly worsening.",
+            "Use the result as guidance, not a final diagnosis.",
+        ],
+        interaction: [
+            "Enter all medicines you take, including over-the-counter products.",
+            "Double-check interactions before combining two new medicines.",
+            "Ask a pharmacist if the interaction result looks serious.",
+        ],
+        dosage: [
+            "Enter age and weight accurately for a safer dose estimate.",
+            "Do not use the calculator for emergency treatment decisions.",
+            "If the medicine has special instructions, follow the label or your doctor.",
+        ],
+        effects: [
+            "Watch for common side effects after starting a new medicine.",
+            "Severe rash, swelling, or breathing trouble needs immediate care.",
+            "Report ongoing side effects to a clinician or pharmacist.",
+        ],
+        encyclopedia: [
+            "Use the encyclopedia to understand what a medicine does before starting it.",
+            "Check storage and contraindications if the medicine is for regular use.",
+            "Cross-check with a licensed clinician when a medicine is new to you.",
+        ],
+        default: [
+            "Keep medicines away from children and direct heat.",
+            "Do not combine medicines without checking interactions first.",
+            "If symptoms are severe, seek medical care first.",
+        ]
+    };
+
+    const TipsPanel = () => {
+        const currentTips = featureTips[view] || featureTips.default;
+        const title = NAV_ITEMS.find((item) => item.id === view)?.label || "Health Tips";
+
+        return (
+            <aside className="glass rounded-2xl p-5 sticky top-24">
             <h3 className="text-lg font-bold mb-3 flex items-center">
                 <i className="fa-solid fa-lightbulb text-amber-500 mr-2"></i>
-                Health Tips
+                {title} Tips
             </h3>
             <ul className="space-y-3 text-sm text-slate-700">
-                <li className="flex"><i className="fa-solid fa-check text-teal-600 mt-1 mr-2"></i>Check interactions before combining multiple medicines.</li>
-                <li className="flex"><i className="fa-solid fa-check text-teal-600 mt-1 mr-2"></i>For severe symptoms, emergency care should be first priority.</li>
-                <li className="flex"><i className="fa-solid fa-check text-teal-600 mt-1 mr-2"></i>Set reminders to improve medicine adherence.</li>
+                {currentTips.map((tip) => (
+                    <li key={tip} className="flex"><i className="fa-solid fa-check text-teal-600 mt-1 mr-2"></i>{tip}</li>
+                ))}
             </ul>
         </aside>
-    );
+        );
+    };
 
     return (
         <div className="min-h-screen flex">

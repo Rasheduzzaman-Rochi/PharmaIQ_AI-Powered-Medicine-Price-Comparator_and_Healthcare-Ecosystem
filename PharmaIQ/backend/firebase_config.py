@@ -51,7 +51,8 @@ def get_routine(user_id):
     if firebase_initialized and db:
         try:
             docs = db.collection('users').document(user_id).collection('routine').stream()
-            return [doc.to_dict() for doc in docs]
+            # Keep Firestore document id authoritative even if payload contains an `id` field.
+            return [{**doc.to_dict(), 'id': doc.id} for doc in docs]
         except Exception as e:
             print(f"Error getting routine: {e}")
     return []
@@ -59,9 +60,32 @@ def get_routine(user_id):
 def save_routine_item(user_id, item):
     if firebase_initialized and db:
         try:
-            db.collection('users').document(user_id).collection('routine').add(item)
+            ref = db.collection('users').document(user_id).collection('routine').add(item)[1]
+            return ref.id
         except Exception as e:
             print(f"Error saving routine item: {e}")
+    return None
+
+def delete_routine_item(user_id, routine_id):
+    if firebase_initialized and db:
+        try:
+            db.collection('users').document(user_id).collection('routine').document(routine_id).delete()
+            return True
+        except Exception as e:
+            print(f"Error deleting routine item: {e}")
+    return False
+
+def update_routine_item_status(user_id, routine_id, status):
+    if firebase_initialized and db:
+        try:
+            db.collection('users').document(user_id).collection('routine').document(routine_id).set(
+                {'status': status},
+                merge=True
+            )
+            return True
+        except Exception as e:
+            print(f"Error updating routine item: {e}")
+    return False
 
 def update_routine_log(user_id, med_id, date, taken):
     pass

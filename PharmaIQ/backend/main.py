@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from models import *
 from gemini_service import get_gemini_response, build_medical_chat_prompt
-from firebase_config import get_all_products, get_product as get_product_from_store, get_user, save_user, get_routine, save_routine_item, save_order
+from firebase_config import get_all_products, get_product as get_product_from_store, get_user, save_user, get_routine, save_routine_item, delete_routine_item, update_routine_item_status, save_order
 import json
 import os
 
@@ -87,8 +87,27 @@ async def get_user_data(user_id: str):
 
 @app.post("/api/user/{user_id}/routine")
 async def add_routine_item(user_id: str, item: dict):
-    save_routine_item(user_id, item)
-    return {"status": "added"}
+    routine_id = save_routine_item(user_id, item)
+    return {"status": "added", "id": routine_id}
+
+@app.delete("/api/user/{user_id}/routine/{routine_id}")
+async def remove_routine_item(user_id: str, routine_id: str):
+    deleted = delete_routine_item(user_id, routine_id)
+    if not deleted:
+        raise HTTPException(404, "Routine item not found")
+    return {"status": "deleted"}
+
+@app.put("/api/user/{user_id}/routine/{routine_id}")
+async def update_routine_item(user_id: str, routine_id: str, item: dict):
+    status = str(item.get("status", "")).strip()
+    if not status:
+        raise HTTPException(400, "status is required")
+
+    updated = update_routine_item_status(user_id, routine_id, status)
+    if not updated:
+        raise HTTPException(404, "Routine item not found")
+
+    return {"status": "updated", "routine_id": routine_id}
 
 # ------------------- Shop Products (from Firestore) -------------------
 @app.get("/api/products")
