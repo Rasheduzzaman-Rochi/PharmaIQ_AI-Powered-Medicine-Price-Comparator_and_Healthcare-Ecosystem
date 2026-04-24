@@ -1,7 +1,7 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from models import *
-from gemini_service import get_gemini_response, build_medical_chat_prompt
+from gemini_service import get_gemini_response, build_medical_chat_prompt, extract_medicines_from_image
 from firebase_config import get_all_products, get_product as get_product_from_store, get_user, save_user, get_routine, save_routine_item, delete_routine_item, update_routine_item_status, save_order
 import json
 import os
@@ -77,6 +77,25 @@ async def chat(req: ChatRequest):
     prompt = build_medical_chat_prompt(req.message, req.history)
     response = await get_gemini_response(prompt)
     return {"response": response.strip()}
+
+@app.post("/api/scan-prescription")
+async def scan_prescription(image: UploadFile = File(...)):
+    content_type = image.content_type or ""
+    if not content_type.startswith("image/"):
+        raise HTTPException(400, "Please upload a valid image file")
+
+    image_bytes = await image.read()
+    if not image_bytes:
+        raise HTTPException(400, "Uploaded image is empty")
+
+    result = await extract_medicines_from_image(image_bytes, content_type)
+    medicines = result.get("medicines", [])
+
+    return {
+        "medicines": medicines,
+        "count": len(medicines),
+        "message": "Scan completed" if medicines else "No medicine names detected"
+    }
 
 # ------------------- Firebase CRUD for Routine & User -------------------
 @app.get("/api/user/{user_id}")

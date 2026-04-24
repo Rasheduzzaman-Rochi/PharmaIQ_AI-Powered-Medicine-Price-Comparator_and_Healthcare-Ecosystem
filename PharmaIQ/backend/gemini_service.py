@@ -38,6 +38,46 @@ def _extract_between(text, start_marker, end_marker=None):
             end = found_end
     return text[start:end].strip()
 
+
+def _extract_json_block(text):
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+
+    if raw.startswith("```"):
+        raw = raw.replace("```json", "").replace("```", "").strip()
+
+    match = re.search(r"\{[\s\S]*\}", raw)
+    return match.group(0).strip() if match else raw
+
+
+def _normalize_medicine_rows(rows):
+    normalized = []
+    for row in rows or []:
+        if isinstance(row, str):
+            row = {"name": row}
+        if not isinstance(row, dict):
+            continue
+
+        name = str(row.get("name", "")).strip()
+        if not name:
+            continue
+
+        strength = str(row.get("strength", "")).strip()
+        notes = str(row.get("notes", "")).strip()
+        try:
+            confidence = float(row.get("confidence", 0.0) or 0.0)
+        except Exception:
+            confidence = 0.0
+
+        normalized.append({
+            "name": name,
+            "strength": strength,
+            "notes": notes,
+            "confidence": max(0.0, min(1.0, confidence))
+        })
+    return normalized
+
 MEDICAL_CHAT_INSTRUCTIONS = """You are PharmaBot, a helpful medical and medicine-shopping assistant.
 Rules:
 - Be concise, friendly, and practical.
@@ -198,3 +238,33 @@ Conversation context:
 {user_line}User message: {message}
 
 Write the best helpful reply now."""
+
+
+async def extract_medicines_from_image(image_bytes, mime_type="image/jpeg"):
+        prompt = """You are reading a prescription image.
+Extract medicine names from the image.
+Return only valid JSON with this exact shape:
+{
+    "medicines": [
+        {"name": "Napa", "strength": "500mg", "notes": "", "confidence": 0.95}
+    ]
+}
+Rules:
+- Output only JSON, no extra text.
+- If uncertain, still return best guess with lower confidence.
+- If no medicine is found, return {"medicines": []}.
+"""
+
+        try:
+                model = get_model()
+                response = await model.generate_content_async([
+                        prompt,
+                        {"mime_type": mime_type or "image/jpeg", "data": image_bytes}
+                ])
+                text = response.text or ""
+                payload = _extract_json_block(text)
+                parsed = json.loads(payload) if payload else {"medicines": []}
+                medicines = _normalize_medicine_rows(parsed.get("medicines", []))
+                return {"medicines": medicines}
+        except Exception:
+                return {"medicines": []}
