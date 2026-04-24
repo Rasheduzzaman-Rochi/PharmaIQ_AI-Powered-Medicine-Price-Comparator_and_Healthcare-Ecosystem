@@ -1,1 +1,18 @@
 PharmaIQ/backend/serviceAccountKey.json
+
+# Environment and secrets
+.env
+*.env
+**/.env
+**/*.pem
+**/*serviceAccount*.json
+
+# Python virtual environments and caches
+venv/
+.venv/
+**/__pycache__/
+*.pyc
+
+# OS/editor noise
+.DS_Store
+.vscode/
