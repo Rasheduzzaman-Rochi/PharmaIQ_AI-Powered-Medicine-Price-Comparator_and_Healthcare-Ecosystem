@@ -105,6 +105,12 @@ const NAV_ITEMS = [
 ];
 
 const CATEGORY_TAGS = ["All", "Pain Relief", "Diabetes", "Heart Care", "Supplements", "Devices"];
+const CHAT_PROMPTS = [
+    "What is the best dose for fever medicine?",
+    "Check interaction between two medicines",
+    "Suggest cheaper alternatives for Napa",
+    "What side effects should I watch for?"
+];
 
 async function callApi(endpoint, data) {
     const res = await fetch(`${API_BASE}${endpoint}`, {
@@ -142,8 +148,19 @@ function App() {
 
     const [chatOpen, setChatOpen] = useState(false);
     const [chatInput, setChatInput] = useState("");
+    const [chatSending, setChatSending] = useState(false);
+    const [chatCheckoutFlow, setChatCheckoutFlow] = useState({
+        active: false,
+        step: "",
+        name: "",
+        mobile: "",
+        address: ""
+    });
     const [chatMessages, setChatMessages] = useState([
-        { sender: "bot", text: "Hello, I am PharmaBot. Ask me anything about medicines." }
+        {
+            sender: "bot",
+            text: "Hello, I am PharmaBot. Ask me anything about medicines, side effects, dosage, interactions, or cheaper alternatives."
+        }
     ]);
 
     const [profile, setProfile] = useState({
@@ -366,25 +383,106 @@ function App() {
         setView("shop");
     };
 
-    const handleCheckout = async () => {
+    const findBestProductMatch = (rawText) => {
+        const normalizedSentence = normalizeText(rawText)
+            .replace(/[^a-z0-9\s]/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+
+        const text = normalizedSentence
+            .replace(/\b(add|to|cart|buy|please|medicine|medicines|now|this|that|korte|daw|dao|koro|hello|hi|i|want|need|am|ei|ta|ekta)\b/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+
+        if (!text) return null;
+
+        const exact = shopProducts.find((p) => {
+            const values = [p.name, p.brandName, p.genericName].map(normalizeText);
+            return values.includes(text);
+        });
+        if (exact) return exact;
+
+        const phraseHit = shopProducts.find((p) => {
+            const values = [p.name, p.brandName, p.genericName]
+                .map((value) => normalizeText(value).replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim())
+                .filter(Boolean);
+            return values.some((value) => normalizedSentence.includes(value));
+        });
+        if (phraseHit) return phraseHit;
+
+        const simpleContains = shopProducts.find((p) => {
+            const hay = [p.name, p.brandName, p.genericName, p.company].map(normalizeText).join(" ");
+            return hay.includes(text);
+        });
+        if (simpleContains) return simpleContains;
+
+        const tokens = text.split(" ").filter((token) => token.length > 1);
+        if (tokens.length === 0) return null;
+
+        let bestMatch = null;
+        let bestScore = 0;
+
+        for (const product of shopProducts) {
+            const productText = [product.name, product.brandName, product.genericName, product.company]
+                .map((value) => normalizeText(value).replace(/[^a-z0-9\s]/g, " "))
+                .join(" ");
+
+            let score = 0;
+            for (const token of tokens) {
+                if (productText.includes(token)) score += 1;
+            }
+
+            if (score > bestScore) {
+                bestScore = score;
+                bestMatch = product;
+            }
+        }
+
+        return bestScore > 0 ? bestMatch : null;
+    };
+
+    const findCheapestByGenericFromText = (rawText) => {
+        const text = normalizeText(rawText);
+        const genericPool = Array.from(new Set(shopProducts.map((p) => normalizeText(p.genericName)).filter(Boolean)));
+        const matchedGeneric = genericPool.find((generic) => text.includes(generic));
+        if (!matchedGeneric) return null;
+
+        const sameGeneric = shopProducts
+            .filter((p) => normalizeText(p.genericName) === matchedGeneric)
+            .sort((a, b) => Number(a.price || 0) - Number(b.price || 0));
+
+        if (sameGeneric.length === 0) return null;
+
+        const cheapest = sameGeneric[0];
+        const highest = sameGeneric[sameGeneric.length - 1];
+        const savePerUnit = Math.max(Number(highest.price || 0) - Number(cheapest.price || 0), 0);
+
+        return { generic: matchedGeneric, cheapest, savePerUnit };
+    };
+
+    const openCheckoutFlow = () => {
+        setView("shop");
+        setChatCheckoutFlow({ active: true, step: "name", name: "", mobile: "", address: "" });
+        return "Great. Please share your full name to place the order.";
+    };
+
+    const submitCheckoutWithDetails = async (name, mobile, address) => {
         if (cart.length === 0) {
             setCheckoutError("Your cart is empty.");
-            return;
+            return { ok: false, message: "Your cart is empty. Please add a medicine first." };
         }
 
-        const name = checkoutForm.name.trim();
-        const mobile = checkoutForm.mobile.trim();
-        const address = checkoutForm.address.trim();
+        const safeName = String(name || "").trim();
+        const safeMobile = String(mobile || "").trim();
+        const safeAddress = String(address || "").trim();
 
-        if (!name || !mobile || !address) {
-            setCheckoutError("Please fill name, mobile number, and address.");
-            return;
+        if (!safeName || !safeMobile || !safeAddress) {
+            return { ok: false, message: "Please provide name, phone number, and address." };
         }
 
-        const mobileOk = /^\+?[0-9\-\s]{10,15}$/.test(mobile);
+        const mobileOk = /^\+?[0-9\-\s]{10,15}$/.test(safeMobile);
         if (!mobileOk) {
-            setCheckoutError("Please enter a valid mobile number.");
-            return;
+            return { ok: false, message: "Phone number seems invalid. Please enter a valid phone number." };
         }
 
         setCheckoutLoading(true);
@@ -392,9 +490,9 @@ function App() {
 
         try {
             const payload = {
-                customer_name: name,
-                mobile,
-                address,
+                customer_name: safeName,
+                mobile: safeMobile,
+                address: safeAddress,
                 total: cartTotal,
                 items: cart.map((item) => ({
                     id: item.id,
@@ -417,39 +515,148 @@ function App() {
                     const errorData = await response.json();
                     if (errorData.detail) errorMessage = String(errorData.detail);
                 } catch {
-                    // Ignore parsing error and keep generic message.
+                    // Keep generic fallback.
                 }
                 throw new Error(errorMessage);
             }
 
             const data = await response.json();
+            const totalItems = cart.reduce((sum, item) => sum + item.qty, 0);
             setOrderConfirmed({
                 orderId: data.order_id || `PH-${Date.now().toString().slice(-6)}`,
-                name,
-                mobile,
-                address,
-                items: cart.reduce((sum, item) => sum + item.qty, 0),
+                name: safeName,
+                mobile: safeMobile,
+                address: safeAddress,
+                items: totalItems,
                 total: cartTotal
             });
 
             setCart([]);
             setCheckoutForm({ name: "", mobile: "", address: "" });
+            return {
+                ok: true,
+                message: `Order placed successfully. Order ID: ${data.order_id || "Generated"}. Total: Tk ${cartTotal.toFixed(2)} for ${totalItems} item(s).`
+            };
         } catch (err) {
-            setCheckoutError(err.message || "Checkout failed.");
+            const message = err.message || "Checkout failed.";
+            setCheckoutError(message);
+            return { ok: false, message };
         } finally {
             setCheckoutLoading(false);
         }
     };
 
-    const sendChat = async (e) => {
-        e.preventDefault();
-        if (!chatInput.trim()) return;
-        const userText = chatInput.trim();
+    const handleCheckout = async () => {
+        const result = await submitCheckoutWithDetails(checkoutForm.name, checkoutForm.mobile, checkoutForm.address);
+        if (!result.ok && !checkoutError) {
+            setCheckoutError(result.message);
+        }
+    };
+
+    const processPharmaBotAction = async (userText) => {
+        const message = normalizeText(userText);
+
+        if (chatCheckoutFlow.active) {
+            if (chatCheckoutFlow.step === "name") {
+                const name = userText.trim();
+                if (!name) return { handled: true, reply: "Please provide your full name." };
+                setCheckoutForm((prev) => ({ ...prev, name }));
+                setChatCheckoutFlow((prev) => ({ ...prev, name, step: "mobile" }));
+                return { handled: true, reply: "Thanks. Now send your phone number." };
+            }
+
+            if (chatCheckoutFlow.step === "mobile") {
+                const mobile = userText.trim();
+                const mobileOk = /^\+?[0-9\-\s]{10,15}$/.test(mobile);
+                if (!mobileOk) return { handled: true, reply: "This phone number looks invalid. Please send a valid one." };
+                setCheckoutForm((prev) => ({ ...prev, mobile }));
+                setChatCheckoutFlow((prev) => ({ ...prev, mobile, step: "address" }));
+                return { handled: true, reply: "Great. এবার delivery address দাও." };
+            }
+
+            if (chatCheckoutFlow.step === "address") {
+                const address = userText.trim();
+                if (!address) return { handled: true, reply: "Please send your full delivery address." };
+                setCheckoutForm((prev) => ({ ...prev, address }));
+                const flow = { ...chatCheckoutFlow, address };
+                setChatCheckoutFlow({ active: false, step: "", name: "", mobile: "", address: "" });
+                const result = await submitCheckoutWithDetails(flow.name, flow.mobile, address);
+                return { handled: true, reply: result.message };
+            }
+        }
+
+        const wantsAlternative = /alternative|kom dami|cheapest|lowest|low price|sasta/.test(message);
+        const wantsAdd = /add|cart|add to cart/.test(message);
+        const wantsBuy = /buy|kino|kinte|purchase|order/.test(message);
+
+        if (wantsAlternative && (wantsAdd || wantsBuy)) {
+            const alt = findCheapestByGenericFromText(userText);
+            if (!alt) {
+                return {
+                    handled: true,
+                    reply: "Which generic medicine do you want the cheaper alternative for? Example: Paracetamol, Omeprazole, Metformin."
+                };
+            }
+
+            addToCart(alt.cheapest);
+            setView("shop");
+            const genericTitle = alt.cheapest.genericName || alt.generic;
+            const saveLine = `I added ${alt.cheapest.brandName || alt.cheapest.name} (generic: ${genericTitle}) to cart. You save Tk ${alt.savePerUnit.toFixed(2)} per unit compared to the highest-priced option in this generic.`;
+
+            if (wantsBuy) {
+                const prompt = openCheckoutFlow();
+                return { handled: true, reply: `${saveLine}\n\n${prompt}` };
+            }
+            return { handled: true, reply: saveLine };
+        }
+
+        if (wantsAdd || wantsBuy) {
+            const product = findBestProductMatch(userText);
+            if (!product) {
+                return {
+                    handled: true,
+                    reply: "I could not identify the medicine. Please send the exact medicine or brand name."
+                };
+            }
+
+            addToCart(product);
+            setView("shop");
+            setShopSearch(product.name || product.brandName || "");
+
+            const addedLine = `${product.brandName || product.name} added to cart successfully.`;
+            if (wantsBuy) {
+                const prompt = openCheckoutFlow();
+                return { handled: true, reply: `${addedLine}\n\n${prompt}` };
+            }
+            return { handled: true, reply: addedLine };
+        }
+
+        if (/checkout|place order|order now/.test(message)) {
+            if (cart.length === 0) {
+                return { handled: true, reply: "Your cart is empty. Add a medicine first." };
+            }
+            return { handled: true, reply: openCheckoutFlow() };
+        }
+
+        return { handled: false, reply: "" };
+    };
+
+    const sendMessage = async (messageText) => {
+        const userText = messageText.trim();
+        if (!userText || chatSending) return;
+
+        setChatSending(true);
         const updated = [...chatMessages, { sender: "user", text: userText }];
         setChatMessages(updated);
         setChatInput("");
 
         try {
+            const localAction = await processPharmaBotAction(userText);
+            if (localAction.handled) {
+                setChatMessages([...updated, { sender: "bot", text: localAction.reply }]);
+                return;
+            }
+
             const history = updated.map((m) => ({
                 role: m.sender === "user" ? "user" : "assistant",
                 content: m.text
@@ -458,7 +665,19 @@ function App() {
             setChatMessages([...updated, { sender: "bot", text: data.response || "No response" }]);
         } catch (err) {
             setChatMessages([...updated, { sender: "bot", text: `Error: ${err.message}` }]);
+        } finally {
+            setChatSending(false);
         }
+    };
+
+    const sendChat = async (e) => {
+        e.preventDefault();
+        await sendMessage(chatInput);
+    };
+
+    const useQuickPrompt = async (prompt) => {
+        setChatInput(prompt);
+        await sendMessage(prompt);
     };
 
     const submitSymptom = async (e) => {
@@ -1153,29 +1372,75 @@ function App() {
                 </button>
             </div>
 
-            <aside className={`chat-drawer fixed top-0 right-0 h-full w-full sm:w-[390px] bg-white border-l border-slate-200 shadow-2xl z-50 ${chatOpen ? "translate-x-0 opacity-100" : "translate-x-full opacity-0 pointer-events-none"}`}>
-                <div className="h-full flex flex-col">
-                    <div className="px-4 py-4 border-b border-slate-200 flex items-center justify-between">
-                        <div>
-                            <h4 className="font-bold text-slate-900">PharmaBot</h4>
-                            <p className="text-xs text-slate-500">Ask medicine related questions</p>
+            <aside className={`chat-drawer fixed right-4 bottom-4 top-4 w-[min(92vw,420px)] rounded-3xl overflow-hidden bg-white border border-slate-200 shadow-[0_24px_80px_rgba(15,23,42,0.18)] z-50 ${chatOpen ? "translate-x-0 opacity-100" : "translate-x-full opacity-0 pointer-events-none"}`}>
+                <div className="h-full flex flex-col bg-gradient-to-b from-white via-cyan-50 to-slate-50">
+                    <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between bg-gradient-to-r from-teal-700 via-cyan-600 to-teal-500 text-white">
+                        <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-2xl bg-white/20 flex items-center justify-center border border-white/20">
+                                <i className="fa-solid fa-robot text-lg"></i>
+                            </div>
+                            <div>
+                                <h4 className="font-extrabold text-white leading-none text-[15px]">PharmaBot</h4>
+                                <p className="text-[10px] text-white/80 mt-1">Gemini-powered medicine assistant</p>
+                            </div>
                         </div>
-                        <button onClick={() => setChatOpen(false)} className="w-9 h-9 rounded-full bg-slate-100"><i className="fa-solid fa-xmark"></i></button>
+                        <button onClick={() => setChatOpen(false)} className="w-8 h-8 rounded-full bg-white/15 text-white border border-white/20"><i className="fa-solid fa-xmark text-sm"></i></button>
                     </div>
 
-                    <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50">
+                    <div className="px-4 py-2.5 border-b border-cyan-100 bg-white/80 backdrop-blur-sm">
+                        <div className="flex items-center justify-between text-[10px] text-slate-500 mb-2">
+                            <span>Quick questions</span>
+                            <span className="inline-flex items-center gap-1 text-emerald-700 font-semibold"><i className="fa-solid fa-sparkles"></i> Smart reply</span>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                            {CHAT_PROMPTS.map((prompt) => (
+                                <button
+                                    key={prompt}
+                                    type="button"
+                                    onClick={() => useQuickPrompt(prompt)}
+                                    className="text-left px-3 py-1.5 rounded-full bg-cyan-50 hover:bg-cyan-100 border border-cyan-200 text-[10px] text-cyan-900 transition"
+                                >
+                                    {prompt}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+
+                    <div className="flex-1 overflow-y-auto p-3 space-y-2.5">
                         {chatMessages.map((m, i) => (
-                            <div key={i} className={`flex ${m.sender === "user" ? "justify-end" : "justify-start"}`}>
-                                <div className={`max-w-[82%] px-3 py-2 rounded-2xl text-sm ${m.sender === "user" ? "bg-teal-700 text-white rounded-br-md" : "bg-white border border-slate-200 text-slate-800 rounded-bl-md"}`}>
-                                    {m.text}
+                            <div key={i} className={`flex ${m.sender === "user" ? "justify-end" : "justify-start"} fade-up`}>
+                                <div className={`max-w-[84%] flex items-end gap-2 ${m.sender === "user" ? "flex-row-reverse" : ""}`}>
+                                    <div className={`w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold ${m.sender === "user" ? "bg-teal-700 text-white" : "bg-white border border-cyan-200 text-cyan-700"}`}>
+                                        {m.sender === "user" ? "You" : "AI"}
+                                    </div>
+                                    <div className={`px-3.5 py-2.5 rounded-2xl text-[13px] shadow-sm ${m.sender === "user" ? "bg-gradient-to-r from-teal-700 to-cyan-600 text-white rounded-br-md" : "bg-white border border-slate-200 text-slate-800 rounded-bl-md"}`}>
+                                        {m.text}
+                                    </div>
                                 </div>
                             </div>
                         ))}
+
+                        {chatSending && (
+                            <div className="flex justify-start fade-up">
+                                <div className="max-w-[84%] flex items-end gap-2">
+                                    <div className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold bg-white border border-cyan-200 text-cyan-700">AI</div>
+                                    <div className="px-4 py-3 rounded-2xl text-sm bg-white border border-slate-200 text-slate-500 rounded-bl-md shadow-sm">
+                                        <span className="inline-flex items-center gap-1">
+                                            <span className="w-2 h-2 rounded-full bg-cyan-500 animate-pulse"></span>
+                                            <span className="w-2 h-2 rounded-full bg-cyan-500 animate-pulse" style={{ animationDelay: "120ms" }}></span>
+                                            <span className="w-2 h-2 rounded-full bg-cyan-500 animate-pulse" style={{ animationDelay: "240ms" }}></span>
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
                     </div>
 
-                    <form onSubmit={sendChat} className="p-3 border-t border-slate-200 flex gap-2">
-                        <input value={chatInput} onChange={(e) => setChatInput(e.target.value)} placeholder="Type your question..." className="flex-1 h-11 rounded-xl border border-slate-300 px-3 focus:outline-none focus:ring-2 focus:ring-teal-500" />
-                        <button className="w-11 h-11 rounded-xl bg-teal-700 text-white" type="submit"><i className="fa-solid fa-paper-plane"></i></button>
+                    <form onSubmit={sendChat} className="p-3 border-t border-slate-200 flex gap-2 bg-white/90 backdrop-blur-sm">
+                        <input value={chatInput} onChange={(e) => setChatInput(e.target.value)} placeholder="Ask about medicine, dosage, side effects..." className="flex-1 h-11 rounded-2xl border border-slate-300 px-4 text-[13px] focus:outline-none focus:ring-2 focus:ring-teal-500" />
+                        <button className="w-11 h-11 rounded-2xl bg-gradient-to-r from-teal-700 to-cyan-600 text-white shadow-sm transition-all duration-200 hover:scale-105 active:scale-95" type="submit" disabled={chatSending}>
+                            <i className="fa-solid fa-paper-plane"></i>
+                        </button>
                     </form>
                 </div>
             </aside>

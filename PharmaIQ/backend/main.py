@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from models import *
-from gemini_service import get_gemini_response
+from gemini_service import get_gemini_response, build_medical_chat_prompt
 from firebase_config import get_all_products, get_product as get_product_from_store, get_user, save_user, get_routine, save_routine_item, save_order
 import json
 import os
@@ -74,11 +74,9 @@ async def medicine_info(req: MedicineInfoRequest):
 
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
-    # Build conversation history
-    context = "\n".join([f"{m['role']}: {m['content']}" for m in req.history[-5:]])
-    prompt = f"You are a helpful medical assistant. Previous conversation: {context}\nUser: {req.message}\nAssistant:"
+    prompt = build_medical_chat_prompt(req.message, req.history)
     response = await get_gemini_response(prompt)
-    return {"response": response}
+    return {"response": response.strip()}
 
 # ------------------- Firebase CRUD for Routine & User -------------------
 @app.get("/api/user/{user_id}")
