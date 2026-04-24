@@ -595,10 +595,26 @@ function App() {
         return { generic: matchedGeneric, cheapest, savePerUnit };
     };
 
+    const parseCheckoutDetailsFromText = (rawText) => {
+        const text = String(rawText || "").trim();
+
+        const nameMatch = text.match(/name\s*[:\-]\s*([^,\n]+)/i);
+        const numberMatch = text.match(/(?:number|mobile|phone)\s*[:\-]\s*([^,\n]+)/i);
+        const addressMatch = text.match(/address\s*[:\-]\s*([^\n]+)/i);
+
+        if (!nameMatch || !numberMatch || !addressMatch) return null;
+
+        return {
+            name: nameMatch[1].trim(),
+            mobile: numberMatch[1].trim(),
+            address: addressMatch[1].trim()
+        };
+    };
+
     const openCheckoutFlow = () => {
         setView("shop");
-        setChatCheckoutFlow({ active: true, step: "name", name: "", mobile: "", address: "" });
-        return "Great. Please share your full name to place the order.";
+        setChatCheckoutFlow({ active: true, step: "details", name: "", mobile: "", address: "" });
+        return "Please give me your name, mobile number, and address in one message. Example: Name: John Doe, Number: 019221XXXX, Address: House 12, Road 5, Dhaka.";
     };
 
     const submitCheckoutWithDetails = async (name, mobile, address) => {
@@ -692,30 +708,23 @@ function App() {
         const message = normalizeText(userText);
 
         if (chatCheckoutFlow.active) {
-            if (chatCheckoutFlow.step === "name") {
-                const name = userText.trim();
-                if (!name) return { handled: true, reply: "Please provide your full name." };
-                setCheckoutForm((prev) => ({ ...prev, name }));
-                setChatCheckoutFlow((prev) => ({ ...prev, name, step: "mobile" }));
-                return { handled: true, reply: "Thanks. Now send your phone number." };
-            }
+            if (chatCheckoutFlow.step === "details") {
+                const details = parseCheckoutDetailsFromText(userText);
+                if (!details) {
+                    return {
+                        handled: true,
+                        reply: "Please send all details in this format: Name: John Doe, Number: 019221XXXX, Address: House 12, Road 5, Dhaka."
+                    };
+                }
 
-            if (chatCheckoutFlow.step === "mobile") {
-                const mobile = userText.trim();
-                const mobileOk = /^\+?[0-9\-\s]{10,15}$/.test(mobile);
-                if (!mobileOk) return { handled: true, reply: "This phone number looks invalid. Please send a valid one." };
-                setCheckoutForm((prev) => ({ ...prev, mobile }));
-                setChatCheckoutFlow((prev) => ({ ...prev, mobile, step: "address" }));
-                return { handled: true, reply: "Great. এবার delivery address দাও." };
-            }
-
-            if (chatCheckoutFlow.step === "address") {
-                const address = userText.trim();
-                if (!address) return { handled: true, reply: "Please send your full delivery address." };
-                setCheckoutForm((prev) => ({ ...prev, address }));
-                const flow = { ...chatCheckoutFlow, address };
+                setCheckoutForm((prev) => ({
+                    ...prev,
+                    name: details.name,
+                    mobile: details.mobile,
+                    address: details.address
+                }));
                 setChatCheckoutFlow({ active: false, step: "", name: "", mobile: "", address: "" });
-                const result = await submitCheckoutWithDetails(flow.name, flow.mobile, address);
+                const result = await submitCheckoutWithDetails(details.name, details.mobile, details.address);
                 return { handled: true, reply: result.message };
             }
         }
@@ -723,6 +732,45 @@ function App() {
         const wantsAlternative = /alternative|kom dami|cheapest|lowest|low price|sasta/.test(message);
         const wantsAdd = /add|cart|add to cart/.test(message);
         const wantsBuy = /buy|kino|kinte|purchase|order/.test(message);
+
+        if (wantsAlternative && !wantsAdd && !wantsBuy) {
+            const base = findBestProductMatch(userText);
+            if (!base) {
+                return {
+                    handled: true,
+                    reply: "Please share the medicine name clearly. Example: Which medicine is an alternative of Napa 500?"
+                };
+            }
+
+            const baseGeneric = normalizeText(base.genericName);
+            if (!baseGeneric) {
+                return {
+                    handled: true,
+                    reply: `I found ${base.brandName || base.name}, but I do not have its generic name in the dataset. Please try another medicine name.`
+                };
+            }
+
+            const alternatives = shopProducts
+                .filter((p) => p.id !== base.id && normalizeText(p.genericName) === baseGeneric)
+                .sort((a, b) => Number(a.price || 0) - Number(b.price || 0))
+                .slice(0, 3);
+
+            if (alternatives.length === 0) {
+                return {
+                    handled: true,
+                    reply: `I could not find alternatives for ${base.brandName || base.name} in the current dataset.`
+                };
+            }
+
+            const listText = alternatives
+                .map((item, idx) => `${idx + 1}. ${item.brandName || item.name} - Tk ${Number(item.price || 0).toFixed(2)}`)
+                .join("\n");
+
+            return {
+                handled: true,
+                reply: `Alternatives for ${base.brandName || base.name} (generic: ${base.genericName}):\n${listText}\n\nIf you want, I can add one to your cart.`
+            };
+        }
 
         if (wantsAlternative && (wantsAdd || wantsBuy)) {
             const alt = findCheapestByGenericFromText(userText);
