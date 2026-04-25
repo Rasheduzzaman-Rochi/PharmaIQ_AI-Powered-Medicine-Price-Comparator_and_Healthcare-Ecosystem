@@ -91,8 +91,57 @@
 <script type="text/babel">
 const { useEffect, useMemo, useState } = React;
 
-const API_BASE = "http://localhost:8000/api";
-const ROUTINE_USER_ID = "demo-user";
+function getApiBase() {
+    try {
+        const configured = window.localStorage.getItem("pharmaiq_api_base");
+        if (configured) return configured.replace(/\/$/, "");
+    } catch {}
+
+    const meta = document.querySelector('meta[name="pharmaiq-api-base"]');
+    const metaValue = meta?.getAttribute("content");
+    if (metaValue) return metaValue.replace(/\/$/, "");
+
+    if (window.location.protocol === "http:" || window.location.protocol === "https:") {
+        const { protocol, hostname, port } = window.location;
+
+        // When frontend is served by static dev servers (e.g. Live Server :5500),
+        // backend still runs on FastAPI default :8000.
+        if (["5500", "5501", "3000", "5173", "4173"].includes(port)) {
+            return `${protocol}//${hostname}:8000/api`;
+        }
+
+        return `${window.location.origin.replace(/\/$/, "")}/api`;
+    }
+
+    return "http://localhost:8000/api";
+}
+
+function getOrCreateRoutineUserId() {
+    const key = "pharmaiq_user_id";
+    try {
+        const stored = window.localStorage.getItem(key);
+        if (stored) return stored;
+
+        const generated = window.crypto?.randomUUID
+            ? `user-${window.crypto.randomUUID()}`
+            : `user-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+        window.localStorage.setItem(key, generated);
+        return generated;
+    } catch {
+        return `user-${Date.now()}`;
+    }
+}
+
+function getTodayKey() {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, "0");
+    const day = String(now.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+}
+
+const API_BASE = getApiBase();
+const ROUTINE_USER_ID = getOrCreateRoutineUserId();
 
 const NAV_ITEMS = [
     { id: "finder", label: "Alternative Finder", icon: "fa-magnifying-glass-dollar" },
@@ -193,6 +242,13 @@ function App() {
 
     const [moduleLoading, setModuleLoading] = useState("");
     const [moduleError, setModuleError] = useState("");
+    const [systemStatus, setSystemStatus] = useState({
+        apiReachable: true,
+        storageMode: "loading",
+        productsSource: "",
+        aiReady: true,
+        notice: ""
+    });
     const [symptomResult, setSymptomResult] = useState(null);
     const [interactionResult, setInteractionResult] = useState(null);
     const [dosageResult, setDosageResult] = useState(null);
@@ -201,10 +257,48 @@ function App() {
     const [hasSearched, setHasSearched] = useState(false);
 
     useEffect(() => {
+        const loadHealth = async () => {
+            try {
+                const res = await fetch(`${API_BASE}/health`);
+                if (!res.ok) {
+                    throw new Error("Health check failed");
+                }
+
+                const data = await res.json();
+                const storageMode = data.storage_mode || "local";
+                const notice = storageMode === "local"
+                    ? "Running in local mode. Routine and orders stay on this machine when Firebase is unavailable."
+                    : "";
+
+                setSystemStatus({
+                    apiReachable: true,
+                    storageMode,
+                    productsSource: data.products_source || "",
+                    aiReady: Boolean(data.ai_ready),
+                    notice
+                });
+            } catch {
+                setSystemStatus({
+                    apiReachable: false,
+                    storageMode: "offline",
+                    productsSource: "",
+                    aiReady: false,
+                    notice: `Backend is not reachable at ${API_BASE}. Start the FastAPI server to use AI, products, and saved routine data.`
+                });
+            }
+        };
+
+        loadHealth();
+    }, []);
+
+    useEffect(() => {
         const loadProducts = async () => {
             setShopLoading(true);
             try {
                 const res = await fetch(`${API_BASE}/products`);
+                if (!res.ok) {
+                    throw new Error("Could not load products");
+                }
                 const data = await res.json();
                 const normalized = (Array.isArray(data) ? data : []).map((p, i) => ({
                     id: p.id || String(i + 1),
@@ -228,6 +322,11 @@ function App() {
                 setShopProducts(normalized);
             } catch (e) {
                 setShopProducts([]);
+                setSystemStatus((prev) => ({
+                    ...prev,
+                    apiReachable: false,
+                    notice: `Backend is not reachable at ${API_BASE}. Start the FastAPI server to use AI, products, and saved routine data.`
+                }));
             } finally {
                 setShopLoading(false);
             }
@@ -247,12 +346,11 @@ function App() {
                     dbId: item.id || item.routine_id || "",
                     time: item.time || "09:00 PM",
                     medicine: item.medicine || item.name || "Medicine",
-                    status: item.status || "Pending"
+                    status: item.status || "Pending",
+                    lastTakenDate: item.last_taken_date || item.lastTakenDate || ""
                 })) : [];
 
-                if (remoteRoutine.length > 0) {
-                    setProfile((prev) => ({ ...prev, reminders: remoteRoutine }));
-                }
+                setProfile((prev) => ({ ...prev, reminders: remoteRoutine }));
             } catch {
                 // Keep local state when backend is unavailable.
             }
@@ -263,7 +361,8 @@ function App() {
 
     const progress = useMemo(() => {
         const total = profile.reminders.length;
-        const taken = profile.reminders.filter((item) => item.status === "Taken" || item.status === "Completed").length;
+        const today = getTodayKey();
+        const taken = profile.reminders.filter((item) => (item.lastTakenDate || "") === today).length;
         return total ? Math.round((taken / total) * 100) : 0;
     }, [profile.reminders]);
 
@@ -439,7 +538,12 @@ function App() {
         const response = await fetch(`${API_BASE}/user/${ROUTINE_USER_ID}/routine`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(item)
+            body: JSON.stringify({
+                medicine: item.medicine,
+                time: item.time,
+                status: item.status,
+                last_taken_date: item.lastTakenDate || ""
+            })
         });
 
         if (!response.ok) {
@@ -467,7 +571,10 @@ function App() {
         const response = await fetch(`${API_BASE}/user/${ROUTINE_USER_ID}/routine/${routineId}`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ status })
+            body: JSON.stringify({
+                status,
+                last_taken_date: status === "Taken" ? getTodayKey() : ""
+            })
         });
 
         if (!response.ok) {
@@ -484,7 +591,8 @@ function App() {
             dbId: "",
             time: "09:00 PM",
             medicine: medName,
-            status: "Pending"
+            status: "Pending",
+            lastTakenDate: ""
         };
         setProfile((prev) => ({ ...prev, reminders: [...prev.reminders, next] }));
         setView("routine");
@@ -508,10 +616,11 @@ function App() {
     const completeRoutineItem = async (id) => {
         const target = profile.reminders.find((item) => item.id === id);
         if (!target) return { ok: false, message: "Routine item not found." };
+        const today = getTodayKey();
 
         setProfile((prev) => ({
             ...prev,
-            reminders: prev.reminders.map((item) => item.id === id ? { ...item, status: "Taken" } : item)
+            reminders: prev.reminders.map((item) => item.id === id ? { ...item, status: "Taken", lastTakenDate: today } : item)
         }));
 
         try {
@@ -523,7 +632,7 @@ function App() {
             setModuleError(err.message || "Failed to complete routine item.");
             setProfile((prev) => ({
                 ...prev,
-                reminders: prev.reminders.map((item) => item.id === id ? { ...item, status: target.status } : item)
+                reminders: prev.reminders.map((item) => item.id === id ? { ...item, status: target.status, lastTakenDate: target.lastTakenDate || "" } : item)
             }));
             return { ok: false, message: err.message || "Failed to complete routine item." };
         }
@@ -677,6 +786,16 @@ function App() {
         return value === "taken" || value === "completed";
     };
 
+    const isRoutineDoneToday = (item, date = getTodayKey()) => {
+        return isRoutineDone(item?.status) && String(item?.lastTakenDate || "") === date;
+    };
+
+    const getRoutineStatusLabel = (item, date = getTodayKey()) => {
+        if (isRoutineDoneToday(item, date)) return "Taken today";
+        if (item?.lastTakenDate) return `Pending today | Last taken ${item.lastTakenDate}`;
+        return "Pending today";
+    };
+
     const parseRoutineTimeToMinutes = (timeText) => {
         const text = String(timeText || "").trim();
         const match = text.match(/(\d{1,2})\s*:\s*(\d{2})\s*(am|pm)?/i);
@@ -698,7 +817,7 @@ function App() {
 
     const formatRoutineLines = (items) => {
         return items.map((item, index) => {
-            const statusLabel = isRoutineDone(item.status) ? "Taken" : "Pending";
+            const statusLabel = isRoutineDoneToday(item) ? "Taken today" : "Pending today";
             return `${index + 1}. ${item.medicine} at ${item.time} - ${statusLabel}`;
         }).join("\n");
     };
@@ -748,8 +867,8 @@ function App() {
             return "Your daily pill routine is empty right now. Add a medicine from Finder, Shop, or tell me to add one to your routine.";
         }
 
-        const pending = reminders.filter((item) => !isRoutineDone(item.status));
-        const taken = reminders.filter((item) => isRoutineDone(item.status));
+        const pending = reminders.filter((item) => !isRoutineDoneToday(item));
+        const taken = reminders.filter((item) => isRoutineDoneToday(item));
 
         if (pending.length === 0) {
             return `You already completed all medicines in your daily pill routine today.\n${formatRoutineLines(reminders)}`;
@@ -763,11 +882,13 @@ function App() {
     };
 
     const getChatAppContext = () => ({
-        current_date: new Date().toISOString().slice(0, 10),
+        current_date: getTodayKey(),
         daily_pill_routine: getSortedRoutineItems().map((item) => ({
             medicine: item.medicine,
             time: item.time,
-            status: item.status
+            status: item.status,
+            last_taken_date: item.lastTakenDate || "",
+            taken_today: isRoutineDoneToday(item)
         })),
         cart: cart.map((item) => ({
             name: item.brandName || item.name,
@@ -949,7 +1070,7 @@ function App() {
                 };
             }
 
-            if (isRoutineDone(target.status)) {
+            if (isRoutineDoneToday(target)) {
                 return {
                     handled: true,
                     reply: `${target.medicine} is already marked as taken in your daily pill routine.`
@@ -973,9 +1094,9 @@ function App() {
             };
         }
 
-        const wantsAlternative = /alternative|kom dami|cheapest|lowest|low price|sasta/.test(message);
-        const wantsAdd = /add|cart|add to cart/.test(message);
-        const wantsBuy = /buy|kino|kinte|purchase|order/.test(message);
+        const wantsAlternative = /\b(alternative|cheapest|lowest|low price|sasta|kom dami)\b/.test(message);
+        const wantsAdd = /\badd to cart\b|\b(add|cart)\b/.test(message);
+        const wantsBuy = /\b(buy|kino|kinte|purchase|order)\b/.test(message);
 
         if (wantsAlternative && !wantsAdd && !wantsBuy) {
             const base = findBestProductMatch(userText);
@@ -1058,7 +1179,7 @@ function App() {
             return { handled: true, reply: addedLine };
         }
 
-        if (/checkout|place order|order now/.test(message)) {
+        if (/\bcheckout\b|\bplace order\b|\border now\b/.test(message)) {
             if (cart.length === 0) {
                 return { handled: true, reply: "Your cart is empty. Add a medicine first." };
             }
@@ -1967,20 +2088,23 @@ function App() {
                     No active medicines in your routine. Add a medicine from Finder or Shop.
                 </div>
             ) : (
-                profile.reminders.map((rem) => (
+                profile.reminders.map((rem) => {
+                    const doneToday = isRoutineDoneToday(rem);
+                    return (
                     <div key={rem.id} className="glass rounded-xl p-4 flex items-center justify-between gap-3">
                         <div className="flex items-center min-w-0">
-                            <div className={`w-10 h-10 rounded-full flex items-center justify-center mr-3 ${rem.status === "Taken" || rem.status === "Completed" ? "bg-emerald-500 text-white" : "bg-slate-100 text-slate-500"}`}>
-                                <i className={`fa-solid ${rem.status === "Taken" || rem.status === "Completed" ? "fa-check" : "fa-pills"}`}></i>
+                            <div className={`w-10 h-10 rounded-full flex items-center justify-center mr-3 ${doneToday ? "bg-emerald-500 text-white" : "bg-slate-100 text-slate-500"}`}>
+                                <i className={`fa-solid ${doneToday ? "fa-check" : "fa-pills"}`}></i>
                             </div>
                             <div className="min-w-0">
-                                <p className={`font-semibold truncate ${rem.status === "Taken" || rem.status === "Completed" ? "line-through text-slate-400" : "text-slate-800"}`}>{rem.medicine}</p>
+                                <p className={`font-semibold truncate ${doneToday ? "line-through text-slate-400" : "text-slate-800"}`}>{rem.medicine}</p>
                                 <p className="text-xs text-teal-700">{rem.time}</p>
+                                <p className={`text-[11px] mt-1 ${doneToday ? "text-emerald-700" : "text-slate-500"}`}>{getRoutineStatusLabel(rem)}</p>
                             </div>
                         </div>
 
                         <div className="flex items-center gap-2 shrink-0">
-                            {rem.status === "Taken" || rem.status === "Completed" ? (
+                            {doneToday ? (
                                 <span className="text-xs px-3 py-1 rounded-full bg-emerald-100 text-emerald-700 font-semibold">Completed</span>
                             ) : (
                                 <button onClick={() => completeRoutineItem(rem.id)} className="px-4 py-2 rounded-lg bg-teal-700 text-white text-sm font-semibold">
@@ -1992,7 +2116,7 @@ function App() {
                             </button>
                         </div>
                     </div>
-                ))
+                )})
             )}
         </section>
     );
@@ -2087,7 +2211,7 @@ function App() {
         ],
         routine: [
             "Take routine medicines at the same time every day to avoid missed doses.",
-            "Complete removes a medicine from the database and keeps the active list clean.",
+            "Complete marks a medicine as taken for today. Use Delete only when you want to remove the reminder.",
             "Use Delete if you no longer need a reminder.",
         ],
         symptom: [
@@ -2189,6 +2313,11 @@ function App() {
 
                 <main className="max-w-7xl mx-auto px-4 md:px-6 py-6 grid grid-cols-1 xl:grid-cols-12 gap-6">
                     <div className={`${view === "shop" ? "xl:col-span-12" : "xl:col-span-8"} space-y-4`}>
+                        {systemStatus.notice && (
+                            <div className="glass rounded-xl p-3 text-sm border border-cyan-200 bg-cyan-50 text-cyan-900">
+                                {systemStatus.notice}
+                            </div>
+                        )}
                         {moduleError && <div className="glass rounded-xl p-3 text-sm text-rose-700 bg-rose-50 border-rose-200">{moduleError}</div>}
                         {renderMain()}
                     </div>

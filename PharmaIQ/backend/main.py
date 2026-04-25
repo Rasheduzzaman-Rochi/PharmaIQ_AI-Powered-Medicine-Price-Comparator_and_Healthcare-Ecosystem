@@ -2,13 +2,19 @@ from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from models import *
 from gemini_service import get_gemini_response, build_medical_chat_prompt, extract_medicines_from_image
-from firebase_config import get_all_products, get_product as get_product_from_store, get_user, save_user, get_routine, save_routine_item, delete_routine_item, update_routine_item_status, save_order
+from firebase_config import get_all_products, get_product as get_product_from_store, get_user, save_user, get_routine, save_routine_item, delete_routine_item, update_routine_item_status, save_order, get_storage_mode
 import json
 import os
 import re
 
 app = FastAPI()
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[],
+    allow_origin_regex=os.getenv("FRONTEND_ORIGIN_REGEX", r"(null|https?://(localhost|127\.0\.0\.1)(:\d+)?)"),
+    allow_methods=["*"],
+    allow_headers=["*"]
+)
 
 AI_RESPONSE_STYLE = """Style requirements:
 - Use easy, plain English for non-technical users.
@@ -125,7 +131,19 @@ async def get_user_data(user_id: str):
 
 @app.post("/api/user/{user_id}/routine")
 async def add_routine_item(user_id: str, item: dict):
-    routine_id = save_routine_item(user_id, item)
+    medicine = str(item.get("medicine") or item.get("name") or "").strip()
+    if not medicine:
+        raise HTTPException(400, "medicine is required")
+
+    payload = {
+        "medicine": medicine,
+        "time": str(item.get("time") or "09:00 PM").strip() or "09:00 PM",
+        "status": str(item.get("status") or "Pending").strip() or "Pending",
+        "last_taken_date": str(item.get("last_taken_date") or "").strip()
+    }
+    routine_id = save_routine_item(user_id, payload)
+    if not routine_id:
+        raise HTTPException(503, "Failed to save routine item")
     return {"status": "added", "id": routine_id}
 
 @app.delete("/api/user/{user_id}/routine/{routine_id}")
@@ -140,8 +158,9 @@ async def update_routine_item(user_id: str, routine_id: str, item: dict):
     status = str(item.get("status", "")).strip()
     if not status:
         raise HTTPException(400, "status is required")
+    last_taken_date = str(item.get("last_taken_date", "")).strip()
 
-    updated = update_routine_item_status(user_id, routine_id, status)
+    updated = update_routine_item_status(user_id, routine_id, status, last_taken_date)
     if not updated:
         raise HTTPException(404, "Routine item not found")
 
@@ -176,11 +195,11 @@ async def create_order(req: OrderRequest):
 
     if not order_payload["customer_name"] or not order_payload["mobile"] or not order_payload["address"]:
         raise HTTPException(400, "Customer name, mobile and address are required")
+    if req.total < 0:
+        raise HTTPException(400, "Order total cannot be negative")
 
     try:
         order_id = save_order(order_payload)
-    except RuntimeError as err:
-        raise HTTPException(503, str(err))
     except Exception:
         raise HTTPException(500, "Failed to save order")
 
@@ -189,7 +208,16 @@ async def create_order(req: OrderRequest):
 # ------------------- Health Check -------------------
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "ai_ready": bool(os.getenv("GEMINI_API_KEY"))}
+    storage_mode = get_storage_mode()
+    return {
+        "status": "ok",
+        "ai_ready": bool(os.getenv("GEMINI_API_KEY")),
+        "storage_mode": storage_mode,
+        "firebase_ready": storage_mode == "firebase",
+        "products_source": "firestore" if storage_mode == "firebase" else "demo-catalog",
+        "routine_storage": storage_mode,
+        "orders_storage": storage_mode
+    }
 
 if __name__ == "__main__":
     import uvicorn
