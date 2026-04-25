@@ -196,7 +196,9 @@ function App() {
     const [query, setQuery] = useState("");
     const [isScanning, setIsScanning] = useState(false);
     const [scanFile, setScanFile] = useState(null);
+    const [scanPreviewUrl, setScanPreviewUrl] = useState("");
     const [scanMedicines, setScanMedicines] = useState([]);
+    const [activeScannedMedicine, setActiveScannedMedicine] = useState("");
     const [scanError, setScanError] = useState("");
     const [isLoading, setIsLoading] = useState(false);
     const [results, setResults] = useState([]);
@@ -359,6 +361,20 @@ function App() {
         loadRoutine();
     }, []);
 
+    useEffect(() => {
+        if (!scanFile) {
+            setScanPreviewUrl("");
+            return;
+        }
+
+        const objectUrl = URL.createObjectURL(scanFile);
+        setScanPreviewUrl(objectUrl);
+
+        return () => {
+            URL.revokeObjectURL(objectUrl);
+        };
+    }, [scanFile]);
+
     const progress = useMemo(() => {
         const total = profile.reminders.length;
         const today = getTodayKey();
@@ -388,15 +404,99 @@ function App() {
 
     const normalizeText = (value) => String(value || "").toLowerCase().trim();
 
+    const buildFinderRow = (base) => {
+        const basePrice = Number(base.price || 0);
+        const baseGeneric = normalizeText(base.genericName);
+
+        const alternatives = shopProducts
+            .filter((p) => {
+                if (p.id === base.id) return false;
+
+                const genericName = normalizeText(p.genericName);
+                if (!baseGeneric || !genericName || genericName !== baseGeneric) return false;
+
+                const altPrice = Number(p.price || 0);
+                return altPrice > 0;
+            })
+            .sort((a, b) => Number(a.price || 0) - Number(b.price || 0))
+            .slice(0, 20);
+
+        const cheapest = alternatives[0];
+        const bestSaving = cheapest ? Math.max(basePrice - Number(cheapest.price || 0), 0) : 0;
+
+        return {
+            base,
+            alternatives,
+            bestSaving
+        };
+    };
+
+    const buildFinderRowsForText = (searchText, options = {}) => {
+        const text = String(searchText || "").toLowerCase().trim();
+        if (!text || shopProducts.length === 0) {
+            return [];
+        }
+
+        const singleMedicine = Boolean(options.singleMedicine);
+
+        const medicineFields = (p) => [
+            p.name,
+            p.medicineName,
+            p.brandName,
+            p.genericName,
+            p.company,
+            p.drugClass,
+            p.category,
+            p.form,
+            p.strength,
+            p.description
+        ]
+            .map(normalizeText)
+            .filter(Boolean);
+
+        const includesQuery = (p) => {
+            return medicineFields(p).some((field) => field.includes(text));
+        };
+
+        const words = text.split(/\s+/).filter(Boolean);
+        const matchesAnyWord = (p) => {
+            return medicineFields(p).some((field) => words.some((word) => field.includes(word)));
+        };
+
+        const baseCandidates = shopProducts
+            .filter((p) => includesQuery(p) || matchesAnyWord(p));
+
+        if (singleMedicine) {
+            const primaryField = (p) => [p.brandName, p.name, p.medicineName, p.genericName]
+                .map(normalizeText)
+                .find(Boolean) || "";
+            const primaryFields = (p) => [p.brandName, p.name, p.medicineName, p.genericName]
+                .map(normalizeText)
+                .filter(Boolean);
+
+            const exact = baseCandidates.find((p) => primaryFields(p).some((field) => field === text));
+            const startsWith = baseCandidates.find((p) => primaryFields(p).some((field) => field.startsWith(text) || text.startsWith(field)));
+            const contains = baseCandidates.find((p) => primaryFields(p).some((field) => field.includes(text)));
+
+            const picked = exact || startsWith || contains || baseCandidates[0];
+            return picked ? [buildFinderRow(picked)] : [];
+        }
+
+        return baseCandidates.slice(0, 6).map(buildFinderRow);
+    };
+
     const preventEnterSubmit = (e) => {
         if (e.key === "Enter" && e.target.tagName !== "TEXTAREA") {
             e.preventDefault();
         }
     };
 
-    const searchMedicines = (override) => {
-        const text = (override || query).toLowerCase().trim();
-        if (!text) {
+    const searchMedicines = (override, options = {}) => {
+        const terms = Array.isArray(override)
+            ? override.map((item) => String(item || "").trim()).filter(Boolean)
+            : [String(override || query || "").trim()].filter(Boolean);
+
+        if (terms.length === 0) {
             setHasSearched(false);
             setResults([]);
             return;
@@ -408,71 +508,26 @@ function App() {
         setResults([]);
 
         setTimeout(() => {
-            if (shopProducts.length === 0) {
-                setResults([]);
-                setIsLoading(false);
-                return;
-            }
+            const mergedRows = [];
+            const seen = new Set();
+            const singleMedicine = Boolean(options.singleMedicine);
 
-            const medicineFields = (p) => [
-                p.name,
-                p.medicineName,
-                p.brandName,
-                p.genericName,
-                p.company,
-                p.drugClass,
-                p.category,
-                p.form,
-                p.strength,
-                p.description
-            ]
-                .map(normalizeText)
-                .filter(Boolean);
+            terms.forEach((term) => {
+                const rows = buildFinderRowsForText(term, { singleMedicine });
+                rows.forEach((row) => {
+                    if (singleMedicine) {
+                        mergedRows.push(row);
+                        return;
+                    }
 
-            const includesQuery = (p) => {
-                return medicineFields(p).some((field) => field.includes(text));
-            };
-
-            const words = text.split(/\s+/).filter(Boolean);
-            const matchesAnyWord = (p) => {
-                return medicineFields(p).some((field) => words.some((word) => field.includes(word)));
-            };
-
-            const baseCandidates = shopProducts
-                .filter((p) => includesQuery(p) || matchesAnyWord(p))
-                .slice(0, 6);
-
-            const finderRows = baseCandidates.map((base) => {
-                const basePrice = Number(base.price || 0);
-                const baseGeneric = normalizeText(base.genericName);
-
-                const alternatives = shopProducts
-                    .filter((p) => {
-                        // Exclude the exact searched/base medicine from alternatives.
-                        if (p.id === base.id) return false;
-
-                        const genericName = normalizeText(p.genericName);
-                        if (!baseGeneric || !genericName || genericName !== baseGeneric) return false;
-
-                        const altPrice = Number(p.price || 0);
-                        // Alternative list is generic-matched items sorted by low to high.
-                        // Keep only valid priced items so ordering remains meaningful.
-                        return altPrice > 0;
-                    })
-                    .sort((a, b) => Number(a.price || 0) - Number(b.price || 0))
-                    .slice(0, 20);
-
-                const cheapest = alternatives[0];
-                const bestSaving = cheapest ? Math.max(basePrice - Number(cheapest.price || 0), 0) : 0;
-
-                return {
-                    base,
-                    alternatives,
-                    bestSaving
-                };
+                    const key = String(row.base.id || row.base.name || "").toLowerCase();
+                    if (!key || seen.has(key)) return;
+                    seen.add(key);
+                    mergedRows.push(row);
+                });
             });
 
-            setResults(finderRows);
+            setResults(mergedRows);
             setIsLoading(false);
         }, 550);
     };
@@ -480,9 +535,10 @@ function App() {
     const applyScannedMedicine = (medicineName) => {
         const clean = String(medicineName || "").trim();
         if (!clean) return;
+        setActiveScannedMedicine(clean.toLowerCase());
         setQuery(clean);
         setHasSearched(true);
-        searchMedicines(clean);
+        searchMedicines(clean, { singleMedicine: true });
     };
 
     const runScan = async () => {
@@ -510,7 +566,27 @@ function App() {
             }
 
             const data = await response.json();
-            const medicines = Array.isArray(data.medicines) ? data.medicines.filter((item) => item && item.name) : [];
+            const medicines = Array.isArray(data.medicines)
+                ? data.medicines
+                    .map((item) => {
+                        if (typeof item === "string") {
+                            return {
+                                name: item,
+                                strength: "",
+                                notes: "",
+                                confidence: 0
+                            };
+                        }
+                        return item;
+                    })
+                    .filter((item) => item && String(item.name || "").trim())
+                    .map((item) => ({
+                        name: String(item.name || "").trim(),
+                        strength: String(item.strength || "").trim(),
+                        notes: String(item.notes || "").trim(),
+                        confidence: Number(item.confidence || 0)
+                    }))
+                : [];
 
             if (medicines.length === 0) {
                 const backendHint = String(data.error || "").trim();
@@ -526,7 +602,9 @@ function App() {
             }
 
             setScanMedicines(medicines);
-            applyScannedMedicine(medicines[0].name);
+            setActiveScannedMedicine("");
+            setQuery(medicines.map((item) => item.name).join(", "));
+            searchMedicines(medicines.map((item) => item.name));
         } catch (err) {
             setScanError(err.message || "Scan failed. Please try again.");
         } finally {
@@ -1692,6 +1770,7 @@ function App() {
                                         const file = e.target.files && e.target.files[0] ? e.target.files[0] : null;
                                         setScanFile(file);
                                         setScanMedicines([]);
+                                        setActiveScannedMedicine("");
                                         setScanError("");
                                     }}
                                 />
@@ -1718,16 +1797,18 @@ function App() {
 
                 {scanMedicines.length > 0 && (
                     <div className="mt-4 rounded-xl border border-cyan-200 bg-cyan-50 p-4">
-                        <p className="text-sm font-semibold text-cyan-900 mb-2">Medicines detected from image:</p>
+                        <p className="text-sm font-semibold text-cyan-900 mb-1">Medicines detected from image:</p>
+                        <p className="text-xs text-cyan-700 mb-2">Showing alternatives for all detected medicines below. Click any name to focus on a single medicine.</p>
                         <div className="flex flex-wrap gap-2">
                             {scanMedicines.map((med, idx) => {
                                 const label = `${med.name}${med.strength ? ` (${med.strength})` : ""}`;
+                                const isActive = activeScannedMedicine === med.name.toLowerCase();
                                 return (
                                     <button
                                         key={`${med.name}-${idx}`}
                                         type="button"
                                         onClick={() => applyScannedMedicine(med.name)}
-                                        className="px-3 py-1.5 rounded-full border border-cyan-300 bg-white text-cyan-800 text-xs font-semibold hover:bg-cyan-100"
+                                        className={`px-3 py-1.5 rounded-full border text-xs font-semibold transition-colors ${isActive ? "border-teal-600 bg-teal-600 text-white" : "border-cyan-300 bg-white text-cyan-800 hover:bg-cyan-100"}`}
                                     >
                                         {label}
                                     </button>
@@ -2357,7 +2438,11 @@ function App() {
             {isScanning && (
                 <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center px-4">
                     <div className="relative w-72 h-96 rounded-xl border border-teal-400 overflow-hidden mb-5">
-                        <img src="https://images.unsplash.com/photo-1586281380349-632531db7ed4?auto=format&fit=crop&w=500&q=80" alt="Prescription" className="w-full h-full object-cover opacity-55" />
+                        {scanPreviewUrl ? (
+                            <img src={scanPreviewUrl} alt="Selected prescription" className="w-full h-full object-cover opacity-55" />
+                        ) : (
+                            <div className="w-full h-full bg-slate-800/70"></div>
+                        )}
                         <div className="scan-line"></div>
                     </div>
                     <h3 className="text-white text-xl font-bold">AI OCR is scanning prescription...</h3>
