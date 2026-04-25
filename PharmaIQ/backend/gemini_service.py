@@ -11,7 +11,6 @@ MODEL_CANDIDATES = [
     os.getenv("GEMINI_MODEL"),
     "gemini-2.5-flash",
     "gemini-2.5-pro",
-    "gemini-2.0-flash",
     "gemini-1.5-flash",
     "gemini-1.5-pro",
 ]
@@ -20,7 +19,6 @@ VISION_MODEL_CANDIDATES = [
     os.getenv("GEMINI_VISION_MODEL"),
     "gemini-2.5-flash",
     "gemini-2.5-pro",
-    "gemini-2.0-flash",
     "gemini-1.5-flash",
     "gemini-1.5-pro",
 ]
@@ -28,7 +26,6 @@ VISION_MODEL_CANDIDATES = [
 PREFERRED_GENERATE_MODELS = [
     "gemini-2.5-flash",
     "gemini-2.5-pro",
-    "gemini-2.0-flash",
     "gemini-1.5-flash",
     "gemini-1.5-pro",
 ]
@@ -145,7 +142,7 @@ def get_model():
                 return _build_model(fallback)
             except Exception:
                 continue
-    return genai.GenerativeModel("gemini-2.0-flash")
+    return genai.GenerativeModel("gemini-2.5-flash")
 
 
 def get_vision_model():
@@ -158,7 +155,7 @@ def get_vision_model():
                 return _build_model(fallback)
             except Exception:
                 continue
-    return genai.GenerativeModel("gemini-2.0-flash")
+    return genai.GenerativeModel("gemini-2.5-flash")
 
 
 def _extract_between(text, start_marker, end_marker=None):

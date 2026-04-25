@@ -415,9 +415,13 @@ function App() {
 
             if (medicines.length === 0) {
                 const backendHint = String(data.error || "").trim();
-                const msg = backendHint
-                    ? `Could not read medicine names. Scan service says: ${backendHint}`
-                    : "Could not read medicine names from this image. Please upload a clearer image.";
+                const lowerHint = backendHint.toLowerCase();
+                const quotaIssue = lowerHint.includes("429") || lowerHint.includes("quota") || lowerHint.includes("rate");
+                const msg = quotaIssue
+                    ? "AI scan quota is temporarily exceeded. Please wait a little and try again."
+                    : backendHint
+                        ? `Could not read medicine names. Scan service says: ${backendHint}`
+                        : "Could not read medicine names from this image. Please upload a clearer image.";
                 setScanError(msg);
                 return;
             }
