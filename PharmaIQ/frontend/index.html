@@ -414,7 +414,11 @@ function App() {
             const medicines = Array.isArray(data.medicines) ? data.medicines.filter((item) => item && item.name) : [];
 
             if (medicines.length === 0) {
-                setScanError("Could not read medicine names from this image. Please upload a clearer image.");
+                const backendHint = String(data.error || "").trim();
+                const msg = backendHint
+                    ? `Could not read medicine names. Scan service says: ${backendHint}`
+                    : "Could not read medicine names from this image. Please upload a clearer image.";
+                setScanError(msg);
                 return;
             }
 

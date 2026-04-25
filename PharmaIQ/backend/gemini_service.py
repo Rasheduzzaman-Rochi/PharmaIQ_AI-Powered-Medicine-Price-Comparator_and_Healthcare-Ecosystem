@@ -9,21 +9,156 @@ genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 MODEL_CANDIDATES = [
     os.getenv("GEMINI_MODEL"),
-    "gemini-1.5-flash-latest",
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
     "gemini-2.0-flash",
-    "gemini-1.5-pro-latest",
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
+]
+
+VISION_MODEL_CANDIDATES = [
+    os.getenv("GEMINI_VISION_MODEL"),
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
+]
+
+PREFERRED_GENERATE_MODELS = [
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
 ]
 
 
-def get_model():
-    for model_name in MODEL_CANDIDATES:
-        if not model_name:
+def _normalize_model_name(model_name):
+    name = str(model_name or "").strip()
+    if name.startswith("models/"):
+        return name.split("models/", 1)[1]
+    return name
+
+
+def _available_generate_models():
+    available = set()
+    try:
+        for model in genai.list_models():
+            methods = getattr(model, "supported_generation_methods", []) or []
+            if "generateContent" in methods:
+                available.add(_normalize_model_name(getattr(model, "name", "")))
+    except Exception:
+        return set()
+    return {name for name in available if name}
+
+
+def _build_model(model_name):
+    base = _normalize_model_name(model_name)
+    variants = [base]
+    if base and not base.startswith("models/"):
+        variants.append(f"models/{base}")
+
+    for variant in variants:
+        if not variant:
             continue
         try:
-            return genai.GenerativeModel(model_name)
+            return genai.GenerativeModel(variant)
         except Exception:
             continue
-    return genai.GenerativeModel("gemini-1.5-flash-latest")
+    raise RuntimeError("Unable to initialize Gemini model")
+
+
+def _select_model_name(candidates):
+    normalized_candidates = [_normalize_model_name(name) for name in candidates if str(name or "").strip()]
+    available = _available_generate_models()
+
+    if available:
+        for name in normalized_candidates:
+            if name in available:
+                return name
+        for preferred in PREFERRED_GENERATE_MODELS:
+            if preferred in available:
+                return preferred
+        return sorted(available)[0]
+
+    if normalized_candidates:
+        return normalized_candidates[0]
+    return PREFERRED_GENERATE_MODELS[0]
+
+
+def _ordered_model_names(candidates):
+    ordered = []
+    seen = set()
+    available = _available_generate_models()
+
+    source_names = [_normalize_model_name(name) for name in candidates if str(name or "").strip()]
+    source_names.extend(PREFERRED_GENERATE_MODELS)
+
+    if available:
+        source_names.extend(sorted(available))
+
+    for name in source_names:
+        if not name or name in seen:
+            continue
+        if available and name not in available:
+            continue
+        seen.add(name)
+        ordered.append(name)
+
+    if ordered:
+        return ordered
+    return [PREFERRED_GENERATE_MODELS[0]]
+
+
+def _is_quota_or_rate_error(err):
+    text = str(err or "").lower()
+    return "429" in text or "quota" in text or "rate" in text or "limit" in text
+
+
+async def _generate_content_with_fallback(payload, candidates):
+    last_error = None
+    for model_name in _ordered_model_names(candidates):
+        try:
+            model = _build_model(model_name)
+            response = await model.generate_content_async(payload)
+            return response
+        except Exception as err:
+            last_error = err
+            # Keep trying other models, especially on quota/rate-limit errors.
+            if _is_quota_or_rate_error(err):
+                continue
+            continue
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("No usable Gemini model available")
+
+
+def get_model():
+    selected = _select_model_name(MODEL_CANDIDATES)
+    try:
+        return _build_model(selected)
+    except Exception:
+        for fallback in PREFERRED_GENERATE_MODELS:
+            try:
+                return _build_model(fallback)
+            except Exception:
+                continue
+    return genai.GenerativeModel("gemini-2.0-flash")
+
+
+def get_vision_model():
+    selected = _select_model_name(VISION_MODEL_CANDIDATES)
+    try:
+        return _build_model(selected)
+    except Exception:
+        for fallback in PREFERRED_GENERATE_MODELS:
+            try:
+                return _build_model(fallback)
+            except Exception:
+                continue
+    return genai.GenerativeModel("gemini-2.0-flash")
 
 
 def _extract_between(text, start_marker, end_marker=None):
@@ -78,6 +213,83 @@ def _normalize_medicine_rows(rows):
         })
     return normalized
 
+
+def _parse_medicines_from_any_text(text):
+    payload = _extract_json_block(text)
+    medicines = []
+
+    # First preference: valid JSON structure.
+    try:
+        parsed = json.loads(payload) if payload else {}
+        if isinstance(parsed, dict):
+            rows = parsed.get("medicines", [])
+            if not rows:
+                rows = parsed.get("medicine", []) or parsed.get("drugs", []) or parsed.get("items", [])
+            medicines = _normalize_medicine_rows(rows)
+        elif isinstance(parsed, list):
+            medicines = _normalize_medicine_rows(parsed)
+    except Exception:
+        medicines = []
+
+    if medicines:
+        return medicines
+
+    # Fallback: parse free-form lines from model response.
+    raw = (text or "").replace("\r", "\n")
+    lines = [line.strip() for line in re.split(r"\n|,|;", raw) if line.strip()]
+    if not lines:
+        return []
+
+    blocked = {
+        "medicine", "medicines", "name", "names", "prescription", "unknown",
+        "not", "found", "none", "n/a", "json"
+    }
+    result = []
+    seen = set()
+
+    for line in lines:
+        clean = re.sub(r"^[\-\*\d\)\.\s]+", "", line)
+        clean = re.sub(r"^(medicine\s*name|name|drug|rx|tab|tablet|cap|capsule)\s*[:\-]\s*", "", clean, flags=re.IGNORECASE)
+        clean = re.sub(r"^(tab\.?|tablet\.?|cap\.?|capsule\.?|syrup\.?|inj\.?|injection\.?)\s+", "", clean, flags=re.IGNORECASE)
+        clean = clean.strip("` \t")
+        if not clean:
+            continue
+
+        match = re.match(
+            r"(?P<name>[A-Za-z][A-Za-z0-9\s\-/\+]{1,70}?)(?:\s*[\(\-:]?\s*(?P<strength>\d+(?:\.\d+)?\s?(?:mg|mcg|g|ml)))?(?:\s*\)?\s*(?:[-,:].*)?)?$",
+            clean,
+            re.IGNORECASE
+        )
+        if match:
+            name = re.sub(r"\s+", " ", match.group("name") or "").strip(" -")
+            strength = (match.group("strength") or "").strip()
+        else:
+            fallback = re.search(r"([A-Za-z][A-Za-z0-9\-/\+]{2,})(?:\s+(\d+(?:\.\d+)?\s?(?:mg|mcg|g|ml)))?", clean, re.IGNORECASE)
+            if not fallback:
+                continue
+            name = fallback.group(1).strip()
+            strength = (fallback.group(2) or "").strip()
+
+        name = re.sub(r"\s+", " ", name).strip(" -")
+        low_name = name.lower()
+
+        if len(name) < 3 or low_name in blocked:
+            continue
+
+        key = (low_name, strength.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+
+        result.append({
+            "name": name,
+            "strength": strength,
+            "notes": "",
+            "confidence": 0.4
+        })
+
+    return result
+
 MEDICAL_CHAT_INSTRUCTIONS = """You are PharmaBot, a helpful medical and medicine-shopping assistant.
 Rules:
 - Be concise, friendly, and practical.
@@ -95,8 +307,7 @@ Rules:
 
 async def get_gemini_response(prompt):
     try:
-        model = get_model()
-        response = await model.generate_content_async(prompt)
+        response = await _generate_content_with_fallback(prompt, MODEL_CANDIDATES)
         return response.text or ""
     except Exception as error:
         lower_prompt = prompt.lower()
@@ -241,8 +452,8 @@ Write the best helpful reply now."""
 
 
 async def extract_medicines_from_image(image_bytes, mime_type="image/jpeg"):
-        prompt = """You are reading a prescription image.
-Extract medicine names from the image.
+    prompt = """You are reading a prescription image.
+Extract medicine names from the image (handwritten or computer-typed).
 Return only valid JSON with this exact shape:
 {
     "medicines": [
@@ -252,19 +463,38 @@ Return only valid JSON with this exact shape:
 Rules:
 - Output only JSON, no extra text.
 - If uncertain, still return best guess with lower confidence.
+- Keep brand names exactly as written when possible.
 - If no medicine is found, return {"medicines": []}.
 """
 
-        try:
-                model = get_model()
-                response = await model.generate_content_async([
-                        prompt,
-                        {"mime_type": mime_type or "image/jpeg", "data": image_bytes}
-                ])
-                text = response.text or ""
-                payload = _extract_json_block(text)
-                parsed = json.loads(payload) if payload else {"medicines": []}
-                medicines = _normalize_medicine_rows(parsed.get("medicines", []))
-                return {"medicines": medicines}
-        except Exception:
-                return {"medicines": []}
+    fallback_prompt = """Read this prescription image carefully, including handwritten text.
+List only medicine names and strengths.
+Format:
+- One medicine per line.
+- Example: Napa 500mg
+- Do not add explanations.
+"""
+
+    try:
+        response = await _generate_content_with_fallback([
+            prompt,
+            {"mime_type": mime_type or "image/jpeg", "data": image_bytes}
+        ], VISION_MODEL_CANDIDATES)
+        text = response.text or ""
+        medicines = _parse_medicines_from_any_text(text)
+        if medicines:
+            return {"medicines": medicines[:10]}
+
+        # Retry with a looser extraction format for handwritten prescriptions.
+        retry_response = await _generate_content_with_fallback([
+            fallback_prompt,
+            {"mime_type": mime_type or "image/jpeg", "data": image_bytes}
+        ], VISION_MODEL_CANDIDATES)
+        retry_text = retry_response.text or ""
+        retry_medicines = _parse_medicines_from_any_text(retry_text)
+        return {"medicines": retry_medicines[:10]}
+    except Exception as err:
+        return {
+            "medicines": [],
+            "error": str(err)
+        }

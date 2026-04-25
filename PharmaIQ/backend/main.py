@@ -90,11 +90,13 @@ async def scan_prescription(image: UploadFile = File(...)):
 
     result = await extract_medicines_from_image(image_bytes, content_type)
     medicines = result.get("medicines", [])
+    error = result.get("error", "")
 
     return {
         "medicines": medicines,
         "count": len(medicines),
-        "message": "Scan completed" if medicines else "No medicine names detected"
+        "message": "Scan completed" if medicines else "No medicine names detected",
+        "error": error
     }
 
 # ------------------- Firebase CRUD for Routine & User -------------------
