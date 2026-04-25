@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 class SearchQuery(BaseModel):
     medicine_name: str
@@ -32,6 +32,7 @@ class MedicineInfoRequest(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     history: List[dict] = []
+    app_context: Optional[Dict[str, Any]] = None
 
 
 class OrderItem(BaseModel):

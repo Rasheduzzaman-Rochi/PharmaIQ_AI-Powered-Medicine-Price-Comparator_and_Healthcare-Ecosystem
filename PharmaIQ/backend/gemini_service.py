@@ -298,6 +298,9 @@ Rules:
 - If the user asks about medicine use, side effects, dosage, interactions, or alternatives, answer directly.
 - If any important detail is missing, ask one short follow-up question.
 - Never claim to replace a doctor.
+- If app context includes the user's daily pill routine, use that routine directly when the user asks what to take today or asks about their routine.
+- Do not say you do not know the user's routine when the routine is present in the app context.
+- When answering from app context, clearly say you are using the medicines and statuses currently saved in the app.
 - If the user describes chest pain, breathing trouble, fainting, severe allergic reaction, stroke symptoms, suicide risk, or emergency, say they need urgent medical care now.
 - If the user asks for a medicine recommendation, give safer, general guidance and mention to confirm with a licensed clinician or pharmacist.
 - Keep answers easy to understand for a regular user.
@@ -430,7 +433,7 @@ async def get_gemini_response(prompt):
         )
 
 
-def build_medical_chat_prompt(message, history=None, user_name=None):
+def build_medical_chat_prompt(message, history=None, user_name=None, app_context=None):
     history = history or []
     recent_turns = history[-6:]
     conversation = "\n".join(
@@ -439,10 +442,19 @@ def build_medical_chat_prompt(message, history=None, user_name=None):
         if turn.get('content')
     )
     user_line = f"User name: {user_name}\n" if user_name else ""
+    context_text = "No extra app context."
+    if isinstance(app_context, dict) and app_context:
+        try:
+            context_text = json.dumps(app_context, ensure_ascii=True)
+        except Exception:
+            context_text = str(app_context)
     return f"""{MEDICAL_CHAT_INSTRUCTIONS}
 
 Conversation context:
 {conversation if conversation else 'No previous conversation.'}
+
+App context:
+{context_text}
 
 {user_line}User message: {message}
 

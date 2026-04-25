@@ -91,7 +91,7 @@ Return JSON: name, generic_name, drug_class, mechanism_of_action, indications(li
 
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
-    prompt = build_medical_chat_prompt(req.message, req.history)
+    prompt = build_medical_chat_prompt(req.message, req.history, app_context=req.app_context)
     response = await get_gemini_response(prompt)
     return {"response": response.strip()}
 

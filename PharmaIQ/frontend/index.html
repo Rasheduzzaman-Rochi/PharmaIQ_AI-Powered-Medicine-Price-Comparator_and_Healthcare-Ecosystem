@@ -498,14 +498,16 @@ function App() {
                     reminders: prev.reminders.map((item) => item.id === next.id ? { ...item, dbId: savedId } : item)
                 }));
             }
+            return { ok: true, item: next };
         } catch (err) {
             setModuleError(err.message || "Failed to save routine item.");
+            return { ok: false, message: err.message || "Failed to save routine item." };
         }
     };
 
     const completeRoutineItem = async (id) => {
         const target = profile.reminders.find((item) => item.id === id);
-        if (!target) return;
+        if (!target) return { ok: false, message: "Routine item not found." };
 
         setProfile((prev) => ({
             ...prev,
@@ -516,18 +518,20 @@ function App() {
             if (target.dbId) {
                 await updateRoutineStatus(target.dbId, "Taken");
             }
+            return { ok: true, item: target };
         } catch (err) {
             setModuleError(err.message || "Failed to complete routine item.");
             setProfile((prev) => ({
                 ...prev,
                 reminders: prev.reminders.map((item) => item.id === id ? { ...item, status: target.status } : item)
             }));
+            return { ok: false, message: err.message || "Failed to complete routine item." };
         }
     };
 
     const removeRoutineItemFromList = async (id) => {
         const target = profile.reminders.find((item) => item.id === id);
-        if (!target) return;
+        if (!target) return { ok: false, message: "Routine item not found." };
 
         setProfile((prev) => ({
             ...prev,
@@ -538,9 +542,11 @@ function App() {
             if (target.dbId) {
                 await deleteRoutineItem(target.dbId);
             }
+            return { ok: true, item: target };
         } catch (err) {
             setModuleError(err.message || "Failed to delete routine item.");
             setProfile((prev) => ({ ...prev, reminders: [...prev.reminders, target] }));
+            return { ok: false, message: err.message || "Failed to delete routine item." };
         }
     };
 
@@ -666,6 +672,110 @@ function App() {
         return "Please give me your name, mobile number, and address in one message. Example: Name: John Doe, Number: 019221XXXX, Address: House 12, Road 5, Dhaka.";
     };
 
+    const isRoutineDone = (status) => {
+        const value = normalizeText(status);
+        return value === "taken" || value === "completed";
+    };
+
+    const parseRoutineTimeToMinutes = (timeText) => {
+        const text = String(timeText || "").trim();
+        const match = text.match(/(\d{1,2})\s*:\s*(\d{2})\s*(am|pm)?/i);
+        if (!match) return Number.MAX_SAFE_INTEGER;
+
+        let hours = Number(match[1]);
+        const minutes = Number(match[2]);
+        const meridiem = (match[3] || "").toLowerCase();
+
+        if (meridiem === "pm" && hours < 12) hours += 12;
+        if (meridiem === "am" && hours === 12) hours = 0;
+
+        return (hours * 60) + minutes;
+    };
+
+    const getSortedRoutineItems = () => {
+        return [...profile.reminders].sort((a, b) => parseRoutineTimeToMinutes(a.time) - parseRoutineTimeToMinutes(b.time));
+    };
+
+    const formatRoutineLines = (items) => {
+        return items.map((item, index) => {
+            const statusLabel = isRoutineDone(item.status) ? "Taken" : "Pending";
+            return `${index + 1}. ${item.medicine} at ${item.time} - ${statusLabel}`;
+        }).join("\n");
+    };
+
+    const findRoutineMatch = (rawText, options = {}) => {
+        const { allowDefault = false } = options;
+        const normalizedSentence = normalizeText(rawText)
+            .replace(/[^a-z0-9\s]/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+
+        const cleaned = normalizedSentence
+            .replace(/\b(my|daily|pill|routine|medicine|medicines|tablet|tablets|capsule|capsules|today|take|took|taken|mark|as|done|complete|completed|delete|remove|from|please|should|which|what|need|do|i)\b/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+
+        const reminders = getSortedRoutineItems();
+        if (!cleaned) return allowDefault ? (reminders[0] || null) : null;
+
+        const exact = reminders.find((item) => normalizeText(item.medicine) === cleaned);
+        if (exact) return exact;
+
+        const phrase = reminders.find((item) => normalizedSentence.includes(normalizeText(item.medicine)));
+        if (phrase) return phrase;
+
+        const tokens = cleaned.split(" ").filter((token) => token.length > 1);
+        if (tokens.length === 0) return null;
+
+        let best = null;
+        let bestScore = 0;
+
+        for (const item of reminders) {
+            const medicineText = normalizeText(item.medicine).replace(/[^a-z0-9\s]/g, " ");
+            const score = tokens.reduce((sum, token) => sum + (medicineText.includes(token) ? 1 : 0), 0);
+            if (score > bestScore) {
+                bestScore = score;
+                best = item;
+            }
+        }
+
+        return bestScore > 0 ? best : null;
+    };
+
+    const getRoutineSummaryReply = () => {
+        const reminders = getSortedRoutineItems();
+        if (reminders.length === 0) {
+            return "Your daily pill routine is empty right now. Add a medicine from Finder, Shop, or tell me to add one to your routine.";
+        }
+
+        const pending = reminders.filter((item) => !isRoutineDone(item.status));
+        const taken = reminders.filter((item) => isRoutineDone(item.status));
+
+        if (pending.length === 0) {
+            return `You already completed all medicines in your daily pill routine today.\n${formatRoutineLines(reminders)}`;
+        }
+
+        let reply = `From your daily pill routine, you still need to take:\n${formatRoutineLines(pending)}`;
+        if (taken.length > 0) {
+            reply += `\n\nAlready marked as taken:\n${formatRoutineLines(taken)}`;
+        }
+        return reply;
+    };
+
+    const getChatAppContext = () => ({
+        current_date: new Date().toISOString().slice(0, 10),
+        daily_pill_routine: getSortedRoutineItems().map((item) => ({
+            medicine: item.medicine,
+            time: item.time,
+            status: item.status
+        })),
+        cart: cart.map((item) => ({
+            name: item.brandName || item.name,
+            qty: item.qty,
+            price: item.price
+        }))
+    });
+
     const submitCheckoutWithDetails = async (name, mobile, address) => {
         if (cart.length === 0) {
             setCheckoutError("Your cart is empty.");
@@ -755,6 +865,11 @@ function App() {
 
     const processPharmaBotAction = async (userText) => {
         const message = normalizeText(userText);
+        const wantsRoutineContext = /routine|daily pill|pill routine|medicine routine|reminder|what should i take today|what do i take today|which medicine should i take today|which medicine do i take today|today which medicine|today what medicine|today.*take/.test(message);
+        const wantsRoutineAdd = wantsRoutineContext && /\b(add|include|save|set)\b/.test(message);
+        const wantsRoutineDelete = wantsRoutineContext && /\b(delete|remove|cancel)\b/.test(message);
+        const wantsRoutineComplete = wantsRoutineContext && /\b(took|taken|complete|completed|done|finished|mark)\b/.test(message);
+        const wantsRoutineList = wantsRoutineContext && /\b(show|list|which|what|today|see|tell)\b/.test(message);
 
         if (chatCheckoutFlow.active) {
             if (chatCheckoutFlow.step === "details") {
@@ -776,6 +891,86 @@ function App() {
                 const result = await submitCheckoutWithDetails(details.name, details.mobile, details.address);
                 return { handled: true, reply: result.message };
             }
+        }
+
+        if (wantsRoutineAdd) {
+            const product = findBestProductMatch(userText);
+            const medicineName = product ? (product.brandName || product.name) : "";
+
+            if (!medicineName) {
+                return {
+                    handled: true,
+                    reply: "Please tell me the medicine name you want to add to your daily pill routine. Example: Add Napa to my routine."
+                };
+            }
+
+            const exists = profile.reminders.find((item) => normalizeText(item.medicine) === normalizeText(medicineName));
+            if (exists) {
+                setView("routine");
+                return {
+                    handled: true,
+                    reply: `${exists.medicine} is already in your daily pill routine at ${exists.time}.`
+                };
+            }
+
+            const result = await addToRoutine(medicineName);
+            return {
+                handled: true,
+                reply: result.ok
+                    ? `${medicineName} has been added to your daily pill routine for ${result.item.time}.`
+                    : (result.message || "I could not add that medicine to your routine right now.")
+            };
+        }
+
+        if (wantsRoutineDelete) {
+            const target = findRoutineMatch(userText);
+            if (!target) {
+                return {
+                    handled: true,
+                    reply: "I could not match a medicine from your daily pill routine. Please say the medicine name clearly."
+                };
+            }
+
+            const result = await removeRoutineItemFromList(target.id);
+            return {
+                handled: true,
+                reply: result.ok
+                    ? `${target.medicine} has been removed from your daily pill routine.`
+                    : (result.message || "I could not remove that routine item right now.")
+            };
+        }
+
+        if (wantsRoutineComplete) {
+            const target = findRoutineMatch(userText);
+            if (!target) {
+                return {
+                    handled: true,
+                    reply: "I could not find which routine medicine you want to mark as taken. Please send the medicine name."
+                };
+            }
+
+            if (isRoutineDone(target.status)) {
+                return {
+                    handled: true,
+                    reply: `${target.medicine} is already marked as taken in your daily pill routine.`
+                };
+            }
+
+            const result = await completeRoutineItem(target.id);
+            return {
+                handled: true,
+                reply: result.ok
+                    ? `${target.medicine} is now marked as taken for today.`
+                    : (result.message || "I could not update that routine item right now.")
+            };
+        }
+
+        if (wantsRoutineList) {
+            setView("routine");
+            return {
+                handled: true,
+                reply: getRoutineSummaryReply()
+            };
         }
 
         const wantsAlternative = /alternative|kom dami|cheapest|lowest|low price|sasta/.test(message);
@@ -893,7 +1088,7 @@ function App() {
                 role: m.sender === "user" ? "user" : "assistant",
                 content: m.text
             }));
-            const data = await callApi("/chat", { message: userText, history });
+            const data = await callApi("/chat", { message: userText, history, app_context: getChatAppContext() });
             setChatMessages([...updated, { sender: "bot", text: data.response || "No response" }]);
         } catch (err) {
             setChatMessages([...updated, { sender: "bot", text: `Error: ${err.message}` }]);
