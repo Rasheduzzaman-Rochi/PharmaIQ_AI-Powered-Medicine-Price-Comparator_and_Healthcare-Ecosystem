@@ -143,7 +143,10 @@ PharmaIQ follows a client-server model.
 
 - Frontend
 	- Shell page in `frontend/index.html`
-	- App logic in `frontend/assets/pharmaiq-app.jsx`
+	- Core shared config in `frontend/assets/core/pharmaiq-config.jsx`
+	- App controller logic in `frontend/assets/pharmaiq-app.jsx`
+	- View orchestrator in `frontend/assets/features/pharmaiq-views.jsx`
+	- Feature-wise views in `frontend/assets/features/*`
 	- Shared styling in `frontend/assets/pharmaiq.css`
 	- React (UMD), Tailwind CSS, browser fetch API
 
@@ -195,6 +198,18 @@ PharmaIQ/
 	frontend/
 		index.html                  # Lightweight shell page
 		assets/
+			core/
+				pharmaiq-config.jsx
+			features/
+				finder/
+					finder-view.jsx
+				shop/
+					shop-view.jsx
+				routine/
+					routine-view.jsx
+				tools/
+					medical-tools-view.jsx
+				pharmaiq-views.jsx
 			pharmaiq.css
 			pharmaiq-app.jsx
 ```
@@ -238,7 +253,7 @@ Swagger docs:
 - http://localhost:8000/docs
 
 Frontend:
-- Open `frontend/index.html` in browser
+- Open `frontend/index.html` directly, or serve `PharmaIQ/` with a static server and open `http://127.0.0.1:5500/PharmaIQ/frontend/`
 
 ## 13. Configuration
 
@@ -246,6 +261,10 @@ Create `.env` inside `backend/`:
 
 ```env
 GEMINI_API_KEY=your_gemini_api_key_here
+GEMINI_API_KEY_2=your_second_key_optional
+GEMINI_API_KEY_3=your_third_key_optional
+# Optional alternative format:
+# GEMINI_API_KEYS=key1,key2,key3
 FIREBASE_CREDENTIALS_PATH=serviceAccountKey.json
 API_HOST=0.0.0.0
 API_PORT=8000
@@ -254,7 +273,8 @@ DEBUG=True
 
 ### Important Notes
 - If Firebase credentials are missing/invalid, system runs in local mode.
-- If Gemini key is missing, AI endpoints will not provide useful responses.
+- If no Gemini key is configured, AI endpoints will not provide useful responses.
+- If one Gemini key hits quota/rate limits, backend automatically attempts configured fallback keys.
 
 ## 14. API Overview
 
@@ -295,6 +315,7 @@ This behavior makes the system demo-friendly even without cloud dependencies.
 - Health endpoint reports backend and AI readiness.
 - Frontend shows user-readable messages for unavailable backend.
 - Scan flow handles quota errors and unreadable images.
+- Gemini service supports automatic API key failover on quota/rate/auth-style failures.
 - Backend uses structured HTTP errors for invalid requests.
 - Storage fallback avoids total application failure.
 
