@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from models import *
-from gemini_service import get_gemini_response, build_medical_chat_prompt, extract_medicines_from_image
+from gemini_service import get_gemini_response, build_medical_chat_prompt, extract_medicines_from_image, has_configured_gemini_key
 from firebase_config import get_all_products, get_product as get_product_from_store, get_user, save_user, get_routine, save_routine_item, delete_routine_item, update_routine_item_status, save_order, get_storage_mode
 import json
 import os
@@ -211,7 +211,7 @@ async def health():
     storage_mode = get_storage_mode()
     return {
         "status": "ok",
-        "ai_ready": bool(os.getenv("GEMINI_API_KEY")),
+        "ai_ready": has_configured_gemini_key(),
         "storage_mode": storage_mode,
         "firebase_ready": storage_mode == "firebase",
         "products_source": "firestore" if storage_mode == "firebase" else "demo-catalog",

@@ -142,8 +142,10 @@ Behavior: switch to local JSON storage and demo products
 PharmaIQ follows a client-server model.
 
 - Frontend
-  - Single-page interface in `frontend/index.html`
-  - React (UMD), Tailwind CSS, browser fetch API
+	- Shell page in `frontend/index.html`
+	- App logic in `frontend/assets/pharmaiq-app.jsx`
+	- Shared styling in `frontend/assets/pharmaiq.css`
+	- React (UMD), Tailwind CSS, browser fetch API
 
 - Backend
   - FastAPI service in `backend/main.py`
@@ -191,7 +193,10 @@ PharmaIQ/
 		serviceAccountKey.json      # optional, environment-specific
 		local_store.json            # auto-created in local mode
 	frontend/
-		index.html
+		index.html                  # Lightweight shell page
+		assets/
+			pharmaiq.css
+			pharmaiq-app.jsx
 ```
 
 ## 12. Installation and Setup

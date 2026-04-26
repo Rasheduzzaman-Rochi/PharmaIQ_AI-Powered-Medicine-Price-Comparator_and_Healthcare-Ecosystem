@@ -2,10 +2,60 @@ import google.generativeai as genai
 import json
 import os
 import re
+import asyncio
 from dotenv import load_dotenv
 
 load_dotenv()
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+
+
+def _collect_api_keys():
+    keys = []
+
+    # Primary key (existing behavior).
+    primary = os.getenv("GEMINI_API_KEY", "").strip()
+    if primary:
+        keys.append(primary)
+
+    # Optional additional numbered keys.
+    for idx in range(2, 11):
+        value = os.getenv(f"GEMINI_API_KEY_{idx}", "").strip()
+        if value:
+            keys.append(value)
+
+    # Optional comma-separated list for easier deployment configuration.
+    list_value = os.getenv("GEMINI_API_KEYS", "").strip()
+    if list_value:
+        for value in list_value.split(","):
+            cleaned = value.strip()
+            if cleaned:
+                keys.append(cleaned)
+
+    # De-duplicate while preserving order.
+    unique = []
+    seen = set()
+    for key in keys:
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(key)
+    return unique
+
+
+GEMINI_API_KEYS = _collect_api_keys()
+_ACTIVE_API_KEY_INDEX = 0
+_GENAI_LOCK = asyncio.Lock()
+
+
+def has_configured_gemini_key():
+    return len(GEMINI_API_KEYS) > 0
+
+
+def _configure_gemini(api_key):
+    genai.configure(api_key=api_key)
+
+
+if GEMINI_API_KEYS:
+    _configure_gemini(GEMINI_API_KEYS[0])
 
 MODEL_CANDIDATES = [
     os.getenv("GEMINI_MODEL"),
@@ -113,17 +163,87 @@ def _is_quota_or_rate_error(err):
     return "429" in text or "quota" in text or "rate" in text or "limit" in text
 
 
+def _is_auth_error(err):
+    text = str(err or "").lower()
+    return (
+        "401" in text
+        or "403" in text
+        or "api key" in text
+        or "invalid argument" in text
+        or "permission" in text
+        or "unauthorized" in text
+        or "authentication" in text
+    )
+
+
+def _ordered_api_key_entries():
+    if not GEMINI_API_KEYS:
+        return []
+
+    start = _ACTIVE_API_KEY_INDEX % len(GEMINI_API_KEYS)
+    ordered = []
+    for offset in range(len(GEMINI_API_KEYS)):
+        index = (start + offset) % len(GEMINI_API_KEYS)
+        ordered.append((index, GEMINI_API_KEYS[index]))
+    return ordered
+
+
 async def _generate_content_with_fallback(payload, candidates):
     last_error = None
-    for model_name in _ordered_model_names(candidates):
+    if not GEMINI_API_KEYS:
+        raise RuntimeError("Gemini API key is missing. Set GEMINI_API_KEY or GEMINI_API_KEY_2..10")
+
+    global _ACTIVE_API_KEY_INDEX
+
+    # genai.configure uses global state, so keep generation serialized to avoid key races.
+    async with _GENAI_LOCK:
+        for key_index, api_key in _ordered_api_key_entries():
+            _configure_gemini(api_key)
+
+            for model_name in _ordered_model_names(candidates):
+                try:
+                    model = _build_model(model_name)
+                    response = await model.generate_content_async(payload)
+                    _ACTIVE_API_KEY_INDEX = key_index
+                    return response
+                except Exception as err:
+                    last_error = err
+                    # On invalid/blocked key, move to next key immediately.
+                    if _is_auth_error(err):
+                        break
+
+                    # Keep trying model/key combinations on quota/rate-limit.
+                    if _is_quota_or_rate_error(err):
+                        continue
+
+                    continue
+
+        # If all key/model combinations are exhausted, surface the last error.
+        if last_error:
+            raise last_error
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("No usable Gemini model or API key available")
+
+
+def _build_model_with_key_fallback(candidates):
+    if not GEMINI_API_KEYS:
+        raise RuntimeError("Gemini API key is missing. Set GEMINI_API_KEY or GEMINI_API_KEY_2..10")
+
+    global _ACTIVE_API_KEY_INDEX
+    last_error = None
+
+    for key_index, api_key in _ordered_api_key_entries():
         try:
-            model = _build_model(model_name)
-            response = await model.generate_content_async(payload)
-            return response
+            _configure_gemini(api_key)
+            selected = _select_model_name(candidates)
+            model = _build_model(selected)
+            _ACTIVE_API_KEY_INDEX = key_index
+            return model
         except Exception as err:
             last_error = err
-            # Keep trying other models, especially on quota/rate-limit errors.
-            if _is_quota_or_rate_error(err):
+            if _is_auth_error(err) or _is_quota_or_rate_error(err):
                 continue
             continue
 
@@ -133,9 +253,8 @@ async def _generate_content_with_fallback(payload, candidates):
 
 
 def get_model():
-    selected = _select_model_name(MODEL_CANDIDATES)
     try:
-        return _build_model(selected)
+        return _build_model_with_key_fallback(MODEL_CANDIDATES)
     except Exception:
         for fallback in PREFERRED_GENERATE_MODELS:
             try:
@@ -146,9 +265,8 @@ def get_model():
 
 
 def get_vision_model():
-    selected = _select_model_name(VISION_MODEL_CANDIDATES)
     try:
-        return _build_model(selected)
+        return _build_model_with_key_fallback(VISION_MODEL_CANDIDATES)
     except Exception:
         for fallback in PREFERRED_GENERATE_MODELS:
             try:

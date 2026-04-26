@@ -1,0 +1,70 @@
+:root {
+            --bg: #f6fbff;
+            --surface: #ffffff;
+            --ink: #0b1324;
+            --muted: #52607a;
+            --line: #dce6f4;
+            --brand: #0f766e;
+            --brand-soft: #ccfbf1;
+            --warm: #ea580c;
+            --danger: #be123c;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            font-family: 'Manrope', sans-serif;
+            color: var(--ink);
+            background:
+                radial-gradient(900px 420px at 90% -10%, #b5f5ec 0%, rgba(181,245,236,0) 56%),
+                radial-gradient(880px 440px at -8% 20%, #cfe7ff 0%, rgba(207,231,255,0) 54%),
+                var(--bg);
+        }
+
+        .glass {
+            background: rgba(255, 255, 255, 0.86);
+            border: 1px solid rgba(14, 165, 233, 0.18);
+            backdrop-filter: blur(10px);
+        }
+
+        .scan-line {
+            position: absolute;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, transparent 0%, #2dd4bf 28%, #2dd4bf 72%, transparent 100%);
+            box-shadow: 0 0 16px rgba(45, 212, 191, 0.8);
+            animation: scanner 2.1s linear infinite;
+        }
+
+        @keyframes scanner {
+            0% { top: 8%; }
+            50% { top: 88%; }
+            100% { top: 8%; }
+        }
+
+        .chat-drawer {
+            transition: transform 260ms ease, opacity 260ms ease;
+        }
+
+        .fade-up {
+            animation: fadeUp 380ms ease-out both;
+        }
+
+        @keyframes fadeUp {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .hover-lift {
+            transition: transform 220ms ease, box-shadow 220ms ease, border-color 220ms ease;
+        }
+
+        .hover-lift:hover {
+            transform: translateY(-4px);
+        }
+
+        .hover-zoom {
+            transition: transform 360ms ease;
+        }
