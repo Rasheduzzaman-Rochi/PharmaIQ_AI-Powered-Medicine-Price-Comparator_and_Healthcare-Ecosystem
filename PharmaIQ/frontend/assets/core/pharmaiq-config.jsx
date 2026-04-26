@@ -11,15 +11,15 @@ function getApiBase() {
     if (window.location.protocol === "http:" || window.location.protocol === "https:") {
         const { protocol, hostname, port } = window.location;
 
-        // Static dev servers commonly run on custom ports while backend stays on :8000.
+        // Static dev servers commonly run on custom ports while backend runs remotely.
         if (["5500", "5501", "3000", "5173", "4173"].includes(port)) {
-            return `${protocol}//${hostname}:8000/api`;
+            return "https://pharmaiq-ai-powered-medicine-price.onrender.com/api";
         }
 
         return `${window.location.origin.replace(/\/$/, "")}/api`;
     }
 
-    return "http://localhost:8000/api";
+    return "https://pharmaiq-ai-powered-medicine-price.onrender.com/api";
 }
 
 function getOrCreateRoutineUserId() {
