@@ -10,8 +10,9 @@ import re
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[],
+    allow_origins=["*"],
     allow_origin_regex=os.getenv("FRONTEND_ORIGIN_REGEX", r"(null|https?://(localhost|127\.0\.0\.1)(:\d+)?)"),
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"]
 )
