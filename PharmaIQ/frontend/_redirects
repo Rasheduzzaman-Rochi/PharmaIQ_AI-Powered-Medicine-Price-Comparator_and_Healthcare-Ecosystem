@@ -1,1 +1,4 @@
-/* /index.html    200
+/lander /lander/ 301
+/lander/assets/* /assets/:splat 200
+/lander/* /index.html 200
+/* /index.html 200
