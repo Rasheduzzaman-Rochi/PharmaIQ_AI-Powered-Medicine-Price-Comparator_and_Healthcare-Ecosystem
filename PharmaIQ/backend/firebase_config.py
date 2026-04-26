@@ -110,6 +110,30 @@ DEMO_PRODUCTS = [
     }
 ]
 
+try:
+    # --- NEW SMART PATH LOGIC START ---
+    if os.path.exists("/etc/secrets/serviceAccountKey.json"):
+        # If running on Render, use the hidden secrets folder
+        cred_path = Path("/etc/secrets/serviceAccountKey.json")
+    else:
+        # Otherwise, use the local file for testing on your Mac
+        cred_path = os.getenv("FIREBASE_CREDENTIALS_PATH", "serviceAccountKey.json")
+        cred_path = Path(cred_path)
+        if not cred_path.is_absolute():
+            cred_path = (BASE_DIR / cred_path).resolve()
+    # --- NEW SMART PATH LOGIC END ---
+
+    if cred_path.exists():
+        cred = credentials.Certificate(cred_path)
+        firebase_admin.initialize_app(cred)
+        db = firestore.client()
+        firebase_initialized = True
+        print("Firebase successfully connected!")
+    else:
+        print(f"Warning: Firebase credentials file not found at {cred_path}")
+except Exception as e:
+    print(f"Warning: Firebase not initialized - {e}")
+    db = None
 
 def _default_local_store():
     return {
